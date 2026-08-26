@@ -141,8 +141,24 @@ def cancel_guild_timers(guild_id: int) -> int:
     return len(keys)
 
 
+# Lock asincroni per-ticket (chiave: "guild_id:channel_id")
+# Condivisi tra Discord Bot e Manager API sullo stesso event loop.
+_ticket_locks: dict[str, asyncio.Lock] = {}
+
+
+def get_ticket_lock(guild_id: int | str, channel_id: int | str) -> asyncio.Lock:
+    """Restituisce il lock univoco per la coppia (guild_id, channel_id)."""
+    key = f"{guild_id}:{channel_id}"
+    lock = _ticket_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ticket_locks[key] = lock
+    return lock
+
+
 def active_timer_count() -> int:
     """Timer SLA/anti-abbandono attualmente in attesa, su tutti i server (diagnostica)."""
+
     return sum(1 for t in _scheduled_tasks.values() if not t.done())
 
 
@@ -574,34 +590,56 @@ async def revert_claim_lock(guild: discord.Guild, channel: discord.TextChannel, 
                 pass
 
 
-async def toggle_claim(guild: discord.Guild, channel: discord.TextChannel, gconf: dict, ticket: dict, section: dict, staffer: discord.Member):
-    """Reclama/rilascia il ticket, applicando o rimuovendo il blocco chat. Ritorna (claimato: bool, precedente_claimer_id)."""
-    if ticket.get("claimed_by") == staffer.id:
-        ticket["claimed_by"] = None
-        ticket["claim_deadline"] = None
+async def toggle_claim(
+    guild: discord.Guild | None,
+    channel: discord.TextChannel | None,
+    gconf: dict,
+    ticket: dict,
+    section: dict,
+    staffer: discord.Member | discord.User | int,
+    *,
+    guild_id: int | str | None = None,
+    channel_id: int | str | None = None,
+) -> tuple[bool, int | None]:
+    """Reclama/rilascia il ticket sotto lock, applicando o rimuovendo il blocco chat. Ritorna (claimato: bool, precedente_claimer_id)."""
+    gid = int(guild.id if guild is not None else guild_id)
+    cid = int(channel.id if channel is not None else channel_id)
+    staffer_id = int(staffer.id if hasattr(staffer, "id") else staffer)
+
+    lock = get_ticket_lock(gid, cid)
+    async with lock:
+        if ticket.get("status") != "open":
+            return False, None
+
+        if ticket.get("claimed_by") == staffer_id:
+            ticket["claimed_by"] = None
+            ticket["claim_deadline"] = None
+            ticket["claimer_responded"] = False
+            cfg.save()
+            if guild and channel and isinstance(channel, discord.TextChannel):
+                await revert_claim_lock(guild, channel, gconf, section, staffer_id)
+            cancel_claim_check(gid, cid)
+            return False, staffer_id
+
+        previous = ticket.get("claimed_by")
+        if previous and guild and channel and isinstance(channel, discord.TextChannel):
+            prev_member = await fetch_member(guild, previous)
+            if prev_member:
+                try:
+                    await channel.set_permissions(prev_member, overwrite=None)
+                except discord.Forbidden:
+                    pass
+
+        timeout = claim_timeout_seconds(gid)
+        ticket["claimed_by"] = staffer_id
+        ticket["claim_deadline"] = int(datetime.now(timezone.utc).timestamp()) + timeout
         ticket["claimer_responded"] = False
         cfg.save()
-        await revert_claim_lock(guild, channel, gconf, section, staffer.id)
-        cancel_claim_check(guild.id, channel.id)
-        return False, staffer.id
+        if guild and channel and isinstance(channel, discord.TextChannel) and hasattr(staffer, "guild"):
+            await apply_claim_lock(guild, channel, gconf, section, staffer)
+        schedule_claim_check(gid, cid, staffer_id, timeout)
+        return True, previous
 
-    previous = ticket.get("claimed_by")
-    if previous:
-        prev_member = await fetch_member(guild, previous)
-        if prev_member:
-            try:
-                await channel.set_permissions(prev_member, overwrite=None)
-            except discord.Forbidden:
-                pass
-
-    timeout = claim_timeout_seconds(guild.id)
-    ticket["claimed_by"] = staffer.id
-    ticket["claim_deadline"] = int(datetime.now(timezone.utc).timestamp()) + timeout
-    ticket["claimer_responded"] = False
-    cfg.save()
-    await apply_claim_lock(guild, channel, gconf, section, staffer)
-    schedule_claim_check(guild.id, channel.id, staffer.id, timeout)
-    return True, previous
 
 
 async def update_staff_panel_message(guild: discord.Guild, channel: discord.TextChannel, ticket: dict):
@@ -1165,11 +1203,17 @@ class ConfirmCloseView(discord.ui.View):
     @discord.ui.button(label="Conferma chiusura", emoji="✅", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="🔒 Chiusura in corso, generazione transcript...", view=None)
-        await close_ticket(interaction.guild, interaction.channel, interaction.user)
+        res = await close_ticket(interaction.guild, interaction.channel, interaction.user)
+        if not res.get("success"):
+            try:
+                await interaction.followup.send(f"⚠️ {res.get('message', 'Chiusura non riuscita.')}", ephemeral=True)
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="Annulla", emoji="✖️", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="❌ Chiusura annullata.", view=None)
+
 
 
 # ---------------------------------------------------------------------------
@@ -1287,44 +1331,119 @@ async def create_ticket_channel(
     return channel
 
 
-async def close_ticket(guild: discord.Guild, channel: discord.TextChannel, closer: discord.Member):
-    gconf = cfg.guild(guild.id)
-    ticket = gconf["tickets"].get(str(channel.id))
+async def close_ticket(
+    guild: discord.Guild | None,
+    channel: discord.TextChannel | None,
+    closer: discord.Member | discord.User | int,
+    *,
+    guild_id: int | str | None = None,
+    channel_id: int | str | None = None,
+    reason: str | None = None,
+) -> dict:
+    """Chiude il ticket garantendo transizione atomica OPEN -> CLOSING -> CLOSED.
 
-    cancel_sla_check(guild.id, channel.id)
-    cancel_claim_check(guild.id, channel.id)
+    Condivisa tra Discord Bot e Manager API.
+    Sotto lock (guild_id:channel_id):
+    1. Verifica esistenza e stato == 'open'.
+    2. Imposta ticket['status'] = 'closing' IMMEDIATAMENTE prima del primo await.
+    3. Annulla timer SLA e anti-abbandono.
+    4. Esegue transcript (se canale Discord presente).
+    5. Archivia nello storico guild.
+    6. Rimuove il ticket da active e fa flush debounced.
+    7. Pianifica eliminazione canale Discord in background dopo 5s.
+    """
+    gid = int(guild.id if guild is not None else guild_id)
+    cid = int(channel.id if channel is not None else channel_id)
+    closer_id = int(closer.id if hasattr(closer, "id") else closer)
 
-    if ticket:
-        transcript_sent = await send_transcript(guild, channel, ticket, closer)
+    lock = get_ticket_lock(gid, cid)
+    async with lock:
+        gconf = cfg.peek(gid)
+        if gconf is None or gconf.get("left_at") is not None:
+            return {"success": False, "status": "guild_not_found", "message": f"Guild {gid} non trovata o bot non presente."}
+
+        raw_tickets = gconf.get("tickets")
+        if not isinstance(raw_tickets, dict):
+            return {"success": False, "status": "not_found", "message": f"Ticket {cid} non trovato o già chiuso."}
+
+        ticket = raw_tickets.get(str(cid))
+        if ticket is None or not isinstance(ticket, dict):
+            return {"success": False, "status": "not_found", "message": f"Ticket {cid} non trovato o già chiuso."}
+
+        current_status = ticket.get("status", "open")
+        if current_status != "open":
+            return {"success": False, "status": "already_closing", "message": f"Il ticket è già in stato '{current_status}'."}
+
+        # 1. Transizione atomica a CLOSING prima del primo await
+        ticket["status"] = "closing"
+        cfg.save()
+
+        # 2. Cancellazione immediata dei timer
+        cancel_sla_check(gid, cid)
+        cancel_claim_check(gid, cid)
+
+        # 3. Preparazione metadati chiusura
         closed_at = int(datetime.now(timezone.utc).timestamp())
         opened_at = ticket.get("opened_at")
         duration = (closed_at - opened_at) if opened_at else None
 
-        cfg.add_history_entry(guild.id, {
+        transcript_sent = False
+        channel_name = channel.name if (channel and hasattr(channel, "name")) else str(cid)
+
+        # 4. Transcript sicuro con gestione eccezioni (non blocca la chiusura)
+        if guild and channel and (isinstance(channel, discord.TextChannel) or hasattr(channel, "send")) and hasattr(closer, "mention"):
+            try:
+                transcript_sent = await send_transcript(guild, channel, ticket, closer)
+            except Exception as exc:
+                log.warning("Invio transcript per ticket %s:%s fallito: %s", gid, cid, exc)
+
+        # 5. Archiviazione nello storico
+        history_entry = {
             "number": ticket.get("number"),
-            "channel_name": channel.name,
+            "channel_name": channel_name,
             "section": ticket.get("section"),
             "motivo": ticket.get("motivo"),
             "opener": ticket.get("opener"),
             "claimed_by": ticket.get("claimed_by"),
             "added_members": ticket.get("added_members", []),
             "notes": ticket.get("notes", []),
-            "closed_by": closer.id,
+            "closed_by": closer_id,
+            "close_reason": reason,
             "opened_at": opened_at,
             "closed_at": closed_at,
             "duration_seconds": duration,
             "transcript_sent": transcript_sent,
-            "rating": None,  # riservato per una futura funzione di valutazione
-        })
+            "rating": None,
+        }
+        cfg.add_history_entry(gid, history_entry)
 
-        gconf["tickets"].pop(str(channel.id), None)
+        # 6. Rimozione definitiva dai ticket attivi
+        raw_tickets.pop(str(cid), None)
         cfg.save()
 
-    await asyncio.sleep(5)
-    try:
-        await channel.delete(reason=f"Ticket chiuso da {closer}")
-    except (discord.Forbidden, discord.NotFound):
-        pass
+        # 7. Cancellazione canale Discord in background dopo 5 secondi
+        if channel and (isinstance(channel, discord.TextChannel) or hasattr(channel, "delete")):
+            async def _delayed_delete(ch, closer_ref):
+                await asyncio.sleep(5)
+                try:
+                    closer_name = closer_ref.mention if hasattr(closer_ref, "mention") else f"<@{closer_id}>"
+                    await ch.delete(reason=f"Ticket chiuso da {closer_name}")
+                except (discord.Forbidden, discord.NotFound, Exception):
+                    pass
+            _spawn(_delayed_delete(channel, closer))
+
+
+        return {
+            "success": True,
+            "status": "closed",
+            "guild_id": str(gid),
+            "channel_id": str(cid),
+            "closed_by": str(closer_id),
+            "closed_at": closed_at,
+            "number": ticket.get("number"),
+            "message": f"Ticket #{ticket.get('number', 0)} chiuso con successo.",
+        }
+
 
 
 def forget_deleted_ticket(guild_id: int, channel_id: int, channel_name: str = "") -> bool:
@@ -1801,7 +1920,13 @@ class TicketGroup(app_commands.Group):
         if motivo:
             text += f"\n📝 Motivo: {motivo}"
         await interaction.response.send_message(text)
-        await close_ticket(interaction.guild, interaction.channel, interaction.user)
+        res = await close_ticket(interaction.guild, interaction.channel, interaction.user, reason=motivo)
+        if not res.get("success"):
+            try:
+                await interaction.followup.send(f"⚠️ {res.get('message', 'Chiusura non riuscita.')}", ephemeral=True)
+            except discord.HTTPException:
+                pass
+
 
 
 ticket_group = TicketGroup()
