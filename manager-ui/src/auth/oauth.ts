@@ -1,9 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { exchangeOAuthCode } from "../api/auth.api";
 
 const clientId = import.meta.env.VITE_DISCORD_CLIENT_ID as string | undefined;
-const redirectUri = (import.meta.env.VITE_DISCORD_REDIRECT_URI as string | undefined) ?? "http://127.0.0.1:8765/callback";
+const redirectUri = "http://127.0.0.1:8765/callback";
 
 function randomBase64Url(bytes: number) {
   const data = new Uint8Array(bytes);
@@ -18,6 +18,10 @@ async function challenge(verifier: string) {
 
 export async function loginWithDiscord() {
   if (!clientId) throw new Error("Discord OAuth non configurato.");
+  if (!isTauri()) {
+    throw new Error("Il login Discord è disponibile solo nell'app desktop EzTicket Manager.");
+  }
+
   const verifier = randomBase64Url(64);
   const state = randomBase64Url(32);
   const codeChallenge = await challenge(verifier);
