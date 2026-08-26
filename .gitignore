@@ -1,0 +1,17 @@
+# Segreti: MAI committare né condividere questo file
+.env
+
+# Dati del bot (configurazione e ticket di ogni server)
+config_ticket.json
+tickets_active.json
+tickets_history.json
+staff_preferences.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Configurazioni locali Claude
+.claude/
