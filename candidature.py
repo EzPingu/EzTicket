@@ -34,6 +34,110 @@ from config import (
 # identica in tutti i server, dato che i comandi sono sincronizzati globalmente)
 # ---------------------------------------------------------------------------
 
+
+_application_locks: dict[str, asyncio.Lock] = {}
+
+def get_application_lock(guild_id: int | str, user_id: int | str) -> asyncio.Lock:
+    key = f"{guild_id}:{user_id}"
+    if key not in _application_locks:
+        _application_locks[key] = asyncio.Lock()
+    return _application_locks[key]
+
+async def core_accept_application(guild: discord.Guild, utente: discord.Member, actor: discord.Member | discord.abc.User, full_onboard: bool = True, team: str | None = None) -> dict:
+    gconf = cfg.guild(guild.id)
+    refs = gconf.setdefault("candidature_summary_messages", {})
+    if str(utente.id) not in refs:
+        return {"success": False, "status": "not_found", "message": "Candidatura non trovata o già elaborata"}
+
+    added_roles = []
+    nick_status = None
+    
+    if full_onboard:
+        for role_id in list(gconf.get("staff_accepted_role_ids") or []):
+            role = guild.get_role(role_id)
+            if role:
+                try:
+                    await utente.add_roles(role, reason=f"Candidatura staff accettata da {actor}")
+                    added_roles.append(role)
+                except discord.Forbidden:
+                    pass
+
+        old_nick = utente.display_name
+        new_nick = resolve_nickname(guild, utente)
+        if new_nick is None:
+            nick_status = "Nessun formato configurato"
+        else:
+            try:
+                await utente.edit(nick=new_nick, reason="Candidatura staff accettata")
+                nick_status = f"`{old_nick}` → `{new_nick}`"
+            except discord.Forbidden:
+                nick_status = "Errore permessi"
+                
+        dm_embed = build_staff_welcome_dm_embed(guild, utente)
+    else:
+        team_label = team or default_team_label(guild)
+        dm_embed = discord.Embed(
+            title="✅ Candidatura Accettata!",
+            description=(
+                f"Congratulazioni {utente.mention}! 🎉\\\n\\\n"
+                f"La tua candidatura per il ruolo di **{team_label}** è stata **accettata**.\\\n\\\n"
+                f"`[■■■■■■■■■■]` Stato: **Accettata**\\\n\\\n"
+                f"Il nostro team ti contatterà a breve per illustrarti i prossimi passi. "
+                f"Benvenuto/a a bordo! 🚀✨"
+            ),
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        dm_embed.set_thumbnail(url=utente.display_avatar.url)
+        dm_embed.set_footer(text=f"Valutata da {actor.display_name}", icon_url=actor.display_avatar.url)
+
+    dm_sent = await _send_dm(utente, dm_embed)
+    await _resolve_candidature_summary(guild, utente, accepted=True)
+
+    return {
+        "success": True,
+        "roles_added": [str(r.id) for r in added_roles],
+        "nickname_changed": bool(nick_status and "→" in nick_status),
+        "dm_sent": dm_sent,
+        "summary_updated": True
+    }
+
+async def core_reject_application(guild: discord.Guild, utente: discord.Member, actor: discord.Member | discord.abc.User, team: str | None = None, motivo: str | None = None) -> dict:
+    gconf = cfg.guild(guild.id)
+    refs = gconf.setdefault("candidature_summary_messages", {})
+    if str(utente.id) not in refs:
+        return {"success": False, "status": "not_found", "message": "Candidatura non trovata o già elaborata"}
+
+    team_label = team or default_team_label(guild)
+    description = (
+        f"Ciao {utente.mention},\\\n\\\n"
+        f"Ti informiamo che la tua candidatura per il ruolo di **{team_label}** "
+        f"non è stata **accettata** in questa fase.\\\n\\\n"
+        f"`[■■■■■■■■■■]` Stato: **Rifiutata**\\\n\\\n"
+        f"Non scoraggiarti: potrai ricandidarti in futuro. Grazie per il tempo dedicato! 🙏"
+    )
+    if motivo:
+        description += f"\\\n\\\n📝 **Motivo:** {motivo}"
+        
+    embed = discord.Embed(
+        title="❌ Candidatura Rifiutata",
+        description=description,
+        color=discord.Color.red(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=utente.display_avatar.url)
+    embed.set_footer(text=f"Valutata da {actor.display_name}", icon_url=actor.display_avatar.url)
+    
+    dm_sent = await _send_dm(utente, embed)
+    await _resolve_candidature_summary(guild, utente, accepted=False)
+    
+    return {
+        "success": True,
+        "dm_sent": dm_sent,
+        "summary_updated": True
+    }
+\
+\
 async def team_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     guild_id = interaction.guild.id if interaction.guild else 0
     teams = guild_teams(guild_id)
@@ -166,24 +270,35 @@ class CandidaturaGroup(app_commands.Group):
     async def accettata(self, interaction: discord.Interaction, utente: discord.Member, ruolo: str | None = None):
         if not await require_staff(interaction):
             return
-        team = ruolo or default_team_label(interaction.guild)
-        embed = discord.Embed(
-            title="✅ Candidatura Accettata!",
-            description=(
-                f"Congratulazioni {utente.mention}! 🎉\n\n"
-                f"La tua candidatura per il ruolo di **{team}** è stata **accettata**.\n\n"
-                f"`[■■■■■■■■■■]` Stato: **Accettata**\n\n"
-                f"Il nostro team ti contatterà a breve per illustrarti i prossimi passi. "
-                f"Benvenuto/a a bordo! 🚀✨"
-            ),
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.set_thumbnail(url=utente.display_avatar.url)
-        embed.set_footer(text=f"Valutata da {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-        await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", embed=embed)
-        await _send_dm(utente, embed)
-        await _resolve_candidature_summary(interaction.guild, utente, accepted=True)
+            
+        async with get_application_lock(interaction.guild.id, utente.id):
+            res = await core_accept_application(interaction.guild, utente, interaction.user, full_onboard=False, team=ruolo)
+            if not res.get("success"):
+                await interaction.response.send_message(f"⚠️ {res['message']}", ephemeral=True)
+                return
+                
+            team = ruolo or default_team_label(interaction.guild)
+            embed = discord.Embed(
+                title="✅ Candidatura Accettata!",
+                description=(
+                    f"Congratulazioni {utente.mention}! 🎉\
+\
+"
+                    f"La tua candidatura per il ruolo di **{team}** è stata **accettata**.\
+\
+"
+                    f"`[■■■■■■■■■■]` Stato: **Accettata**\
+\
+"
+                    f"Il nostro team ti contatterà a breve per illustrarti i prossimi passi. "
+                    f"Benvenuto/a a bordo! 🚀✨"
+                ),
+                color=discord.Color.green(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_thumbnail(url=utente.display_avatar.url)
+            embed.set_footer(text=f"Valutata da {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+            await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", embed=embed)
 
     @app_commands.command(name="rifiutata", description="Segnala che una candidatura è stata rifiutata")
     @app_commands.describe(
@@ -201,27 +316,40 @@ class CandidaturaGroup(app_commands.Group):
     ):
         if not await require_staff(interaction):
             return
-        team = ruolo or default_team_label(interaction.guild)
-        description = (
-            f"Ciao {utente.mention},\n\n"
-            f"Ti informiamo che la tua candidatura per il ruolo di **{team}** "
-            f"non è stata **accettata** in questa fase.\n\n"
-            f"`[■■■■■■■■■■]` Stato: **Rifiutata**\n\n"
-            f"Non scoraggiarti: potrai ricandidarti in futuro. Grazie per il tempo dedicato! 🙏"
-        )
-        if motivo:
-            description += f"\n\n📝 **Motivo:** {motivo}"
-        embed = discord.Embed(
-            title="❌ Candidatura Rifiutata",
-            description=description,
-            color=discord.Color.red(),
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.set_thumbnail(url=utente.display_avatar.url)
-        embed.set_footer(text=f"Valutata da {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-        await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", embed=embed)
-        await _send_dm(utente, embed)
-        await _resolve_candidature_summary(interaction.guild, utente, accepted=False)
+            
+        async with get_application_lock(interaction.guild.id, utente.id):
+            res = await core_reject_application(interaction.guild, utente, interaction.user, team=ruolo, motivo=motivo)
+            if not res.get("success"):
+                await interaction.response.send_message(f"⚠️ {res['message']}", ephemeral=True)
+                return
+                
+            team = ruolo or default_team_label(interaction.guild)
+            description = (
+                f"Ciao {utente.mention},\
+\
+"
+                f"Ti informiamo che la tua candidatura per il ruolo di **{team}** "
+                f"non è stata **accettata** in questa fase.\
+\
+"
+                f"`[■■■■■■■■■■]` Stato: **Rifiutata**\
+\
+"
+                f"Non scoraggiarti: potrai ricandidarti in futuro. Grazie per il tempo dedicato! 🙏"
+            )
+            if motivo:
+                description += f"\
+\
+📝 **Motivo:** {motivo}"
+            embed = discord.Embed(
+                title="❌ Candidatura Rifiutata",
+                description=description,
+                color=discord.Color.red(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_thumbnail(url=utente.display_avatar.url)
+            embed.set_footer(text=f"Valutata da {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+            await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", embed=embed)
 
 
 candidatura_group = CandidaturaGroup()
@@ -253,69 +381,45 @@ def build_staff_welcome_dm_embed(guild: discord.Guild, utente: discord.Member) -
 
 
 async def handle_staffaccettato(interaction: discord.Interaction, utente: discord.Member):
-    """Gestisce /staffaccettato: assegna i ruoli configurati da QUESTO server
-    (/config ruoliaccettato), aggiorna il nickname secondo il formato del server
-    (/config nickname) e invia il DM di benvenuto nello staff."""
     if not await require_staff(interaction):
         return
 
     await interaction.response.defer(thinking=True)
-
     guild = interaction.guild
-    gconf = cfg.guild(guild.id)
-
-    added_roles = []
-    for role_id in list(gconf.get("staff_accepted_role_ids") or []):
-        role = guild.get_role(role_id)
-        if role:
-            try:
-                await utente.add_roles(role, reason=f"Candidatura staff accettata da {interaction.user}")
-                added_roles.append(role)
-            except discord.Forbidden:
-                pass
-
-    old_nick = utente.display_name
-    new_nick = resolve_nickname(guild, utente)
-    if new_nick is None:
-        nick_status = "➖ Nessun formato configurato (`/config nickname`): nickname lasciato invariato."
-    else:
-        try:
-            await utente.edit(nick=new_nick, reason="Candidatura staff accettata")
-            nick_status = f"`{old_nick}` → `{new_nick}`"
-        except discord.Forbidden:
-            nick_status = (
-                "⚠️ Non modificato: il ruolo del bot deve stare **più in alto** del ruolo dell'utente "
-                "(Impostazioni Server > Ruoli), e non deve trattarsi del proprietario del server."
-            )
-
-    dm_embed = build_staff_welcome_dm_embed(guild, utente)
-    dm_sent = await _send_dm(utente, dm_embed)
-
-    result_embed = discord.Embed(
-        title="✅ Candidatura Staff Accettata",
-        description=f"{utente.mention} è stato accettato nello staff! 🎉",
-        color=discord.Color.green(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    result_embed.set_thumbnail(url=utente.display_avatar.url)
-    result_embed.add_field(
-        name="🎭 Ruoli assegnati",
-        value=(
-            ", ".join(r.mention for r in added_roles)
-            if added_roles
-            else "⚠️ Nessuno: configura i ruoli di questo server con `/config ruoliaccettato`."
-        ),
-        inline=False,
-    )
-    result_embed.add_field(name="🏷️ Nickname", value=nick_status, inline=False)
-    result_embed.add_field(
-        name="📩 DM di benvenuto",
-        value="✅ Inviato" if dm_sent else "⚠️ Non inviato (DM chiusi dall'utente)",
-        inline=False,
-    )
-    result_embed.set_footer(text=f"Eseguito da {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-    await interaction.followup.send(content=utente.mention, embed=result_embed)
-    await _resolve_candidature_summary(guild, utente, accepted=True)
+    
+    async with get_application_lock(guild.id, utente.id):
+        res = await core_accept_application(guild, utente, interaction.user, full_onboard=True)
+        if not res.get("success"):
+            await interaction.followup.send(f"⚠️ {res['message']}", ephemeral=True)
+            return
+            
+        gconf = cfg.guild(guild.id)
+        added_roles = [guild.get_role(int(r_id)) for r_id in res["roles_added"]]
+        added_roles = [r for r in added_roles if r]
+        
+        result_embed = discord.Embed(
+            title="✅ Candidatura Staff Accettata",
+            description=f"{utente.mention} è stato accettato nello staff! 🎉",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        result_embed.set_thumbnail(url=utente.display_avatar.url)
+        result_embed.add_field(
+            name="🎭 Ruoli assegnati",
+            value=(
+                ", ".join(r.mention for r in added_roles)
+                if added_roles
+                else "⚠️ Nessuno: configura i ruoli di questo server con `/config ruoliaccettato`."
+            ),
+            inline=False,
+        )
+        result_embed.add_field(
+            name="📩 DM di benvenuto",
+            value="✅ Inviato" if res["dm_sent"] else "⚠️ Non inviato (DM chiusi dall'utente)",
+            inline=False,
+        )
+        result_embed.set_footer(text=f"Eseguito da {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+        await interaction.followup.send(content=utente.mention, embed=result_embed)
 
 
 # ---------------------------------------------------------------------------

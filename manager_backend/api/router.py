@@ -10,6 +10,7 @@ from manager_backend.api.routes_auth import router as auth_router
 from manager_backend.api.routes_guilds import router as guilds_router
 from manager_backend.api.routes_health import router as health_router
 from manager_backend.api.routes_tickets import router as tickets_router
+from manager_backend.api.routes_applications import router as applications_router
 
 api_v1_router = APIRouter(prefix="/api/v1")
 
@@ -17,4 +18,5 @@ api_v1_router.include_router(health_router)
 api_v1_router.include_router(auth_router)
 api_v1_router.include_router(guilds_router)
 api_v1_router.include_router(tickets_router)
+api_v1_router.include_router(applications_router)
 

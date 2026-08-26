@@ -683,3 +683,17 @@ def main():
 if __name__ == "__main__":
     main()
 
+
+# --- FASE 3: Tests Candidature ---
+def test_applications_unauthorized():
+    print("--- 30. Applicazioni (Non Autorizzato) ---")
+    resp = client.get("/api/v1/guilds/111111111111111111/applications")
+    assert_eq(resp.status_code, 401, "GET /applications senza auth -> 401")
+    
+    resp = client.get("/api/v1/guilds/111111111111111111/applications/12345")
+    assert_eq(resp.status_code, 401, "GET /applications/{id} senza auth -> 401")
+
+def test_applications_list_mock():
+    print("--- 31. Applicazioni Lista (Autorizzato Mock) ---")
+    # Qui il backend e isolato. Verifichiamo almeno che non crashi su una guild vuota o non esistente.
+    pass

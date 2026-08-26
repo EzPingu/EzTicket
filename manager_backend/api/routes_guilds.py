@@ -50,3 +50,24 @@ async def get_guild_detail(
             detail=f"Dettagli per la guild {guild_id} non disponibili.",
         )
     return detail
+
+from manager_backend.models.schemas import GuildUserProfileResponse
+
+@router.get("/{guild_id}/me", response_model=GuildUserProfileResponse)
+async def get_guild_me(
+    guild_id: str,
+    session: SessionData = Depends(get_current_session),
+    access: GuildAccessInfo = Depends(require_guild_access),
+) -> GuildUserProfileResponse:
+    """Restituisce il profilo dell'utente arricchito con il ruolo e i permessi specifici per la guild corrente."""
+    return GuildUserProfileResponse(
+        id=str(session.user_id),
+        username=session.username,
+        global_name=session.global_name,
+        avatar=session.avatar,
+        is_bot_operator=False, # Il bot operator non e essenziale nel contesto guild
+        guild_id=guild_id,
+        guild_role=access.role,
+        is_owner=access.is_owner,
+        is_admin=access.is_admin,
+    )

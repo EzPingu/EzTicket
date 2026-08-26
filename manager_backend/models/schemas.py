@@ -140,3 +140,48 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = None
     code: Optional[str] = None
 
+
+# --- Guild User Profile ---
+class GuildUserProfileResponse(UserProfileResponse):
+    guild_id: str
+    guild_role: str
+    is_owner: bool
+    is_admin: bool
+
+# --- Applications (Candidature) ---
+class ApplicationSummaryResponse(BaseModel):
+    guild_id: str
+    user_id: str
+    channel_id: str
+    message_id: str
+    notice_message_id: Optional[str] = None
+    created_at: int
+    status: str = "pending_review"
+
+class ApplicationDetailResponse(ApplicationSummaryResponse):
+    questions: list[str] = Field(default_factory=list)
+    answers: list[str] = Field(default_factory=list)
+    qa_available: bool = False
+
+class ApplicationAcceptRequest(BaseModel):
+    full_onboard: bool = True
+
+class ApplicationAcceptResponse(BaseModel):
+    success: bool
+    guild_id: str
+    user_id: str
+    roles_added: list[str] = Field(default_factory=list)
+    nickname_changed: bool = False
+    dm_sent: bool = False
+    summary_updated: bool = False
+
+class ApplicationRejectRequest(BaseModel):
+    reason: Optional[str] = Field(None, max_length=500)
+
+class ApplicationRejectResponse(BaseModel):
+    success: bool
+    guild_id: str
+    user_id: str
+    reason: Optional[str] = None
+    dm_sent: bool = False
+    summary_updated: bool = False
