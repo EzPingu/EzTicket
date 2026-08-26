@@ -103,7 +103,7 @@ class ApplicationService:
             if not res.get("success"):
                 raise ValueError("already_processed")
 
-            return ApplicationAcceptResponse(
+            result = ApplicationAcceptResponse(
                 success=True,
                 guild_id=guild_id,
                 user_id=user_id,
@@ -112,6 +112,14 @@ class ApplicationService:
                 dm_sent=res.get("dm_sent", False),
                 summary_updated=res.get("summary_updated", False)
             )
+
+        try:
+            from manager_backend.services.stats_service import stats_service
+            stats_service.invalidate_cache(guild_id)
+        except Exception as _cache_err:
+            log.warning("Cache invalidation dopo accept fallita (non bloccante): %s", _cache_err)
+
+        return result
 
     async def reject_application(self, guild_id: str, user_id: str, actor_id: int, reason: Optional[str] = None) -> ApplicationRejectResponse:
         live_guild = _get_guild(int(guild_id)) if guild_id.isdigit() else None
@@ -132,7 +140,7 @@ class ApplicationService:
             if not res.get("success"):
                 raise ValueError("already_processed")
 
-            return ApplicationRejectResponse(
+            result = ApplicationRejectResponse(
                 success=True,
                 guild_id=guild_id,
                 user_id=user_id,
@@ -140,5 +148,13 @@ class ApplicationService:
                 dm_sent=res.get("dm_sent", False),
                 summary_updated=res.get("summary_updated", False)
             )
+
+        try:
+            from manager_backend.services.stats_service import stats_service
+            stats_service.invalidate_cache(guild_id)
+        except Exception as _cache_err:
+            log.warning("Cache invalidation dopo reject fallita (non bloccante): %s", _cache_err)
+
+        return result
 
 application_service = ApplicationService()

@@ -49,17 +49,29 @@ def test_applications():
     )
     headers = {"Authorization": f"Bearer {session.session_token}"}
     
-    with patch("manager_backend.services.guild_service.guild_service.evaluate_guild_access") as mock_access:
+    def mock_eval(user_id, guild_id, discord_guilds=None):
         from manager_backend.services.guild_service import GuildAccessInfo
-        mock_access.return_value = GuildAccessInfo(
-            guild_id=guild_id,
+        if str(guild_id) == "12345":
+            return GuildAccessInfo(
+                guild_id=str(guild_id),
+                is_present=True,
+                is_authorized=True,
+                role="GUILD_STAFF",
+                is_owner=False,
+                is_admin=False,
+                guild_config={}
+            )
+        return GuildAccessInfo(
+            guild_id=str(guild_id),
             is_present=True,
-            is_authorized=True,
-            role="GUILD_STAFF",
+            is_authorized=False,
+            role="NONE",
             is_owner=False,
             is_admin=False,
             guild_config={}
         )
+
+    with patch("manager_backend.services.guild_service.guild_service.evaluate_guild_access", side_effect=mock_eval):
         
         print("--- 1. List Applications ---")
         resp = client.get(f"/api/v1/guilds/{guild_id}/applications", headers=headers)

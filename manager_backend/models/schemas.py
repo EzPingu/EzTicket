@@ -185,3 +185,133 @@ class ApplicationRejectResponse(BaseModel):
     reason: Optional[str] = None
     dm_sent: bool = False
     summary_updated: bool = False
+
+
+# --- Dashboard Schemas ---
+class DashboardSummaryResponse(BaseModel):
+    guild_id: str
+    active_tickets: int
+    closed_tickets_total: int
+    pending_applications: int
+    tickets_today: int
+    tickets_this_week: int
+    tickets_this_month: int
+    average_resolution_time_seconds: Optional[float] = None
+    average_first_response_time_seconds: Optional[float] = None
+    sla_compliance_rate: Optional[float] = None
+    tickets_by_section: dict[str, int] = Field(default_factory=dict)
+    tickets_by_status: dict[str, int] = Field(default_factory=dict)
+    sla_summary: dict[str, int] = Field(default_factory=dict)
+    data_freshness_timestamp: int
+
+
+# --- History Schemas ---
+class TicketHistoryItemResponse(BaseModel):
+    guild_id: str
+    number: int
+    channel_name: str
+    section: str
+    section_label: Optional[str] = None
+    section_emoji: Optional[str] = None
+    motivo: Optional[str] = None
+    opener_id: str
+    opener_name: Optional[str] = None
+    claimed_by: Optional[str] = None
+    closed_by: Optional[str] = None
+    closed_by_name: Optional[str] = None
+    close_reason: Optional[str] = None
+    opened_at: Optional[int] = None
+    closed_at: Optional[int] = None
+    duration_seconds: Optional[int] = None
+    transcript_sent: bool = False
+    notes_count: int = 0
+    channel_deleted: bool = False
+
+
+class TicketHistoryDetailResponse(TicketHistoryItemResponse):
+    added_members: list[str] = Field(default_factory=list)
+    notes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PaginatedTicketHistoryResponse(BaseModel):
+    guild_id: str
+    items: list[TicketHistoryItemResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+# --- Statistics Schemas ---
+class DailyTicketCount(BaseModel):
+    date: str  # YYYY-MM-DD
+    opened_count: int
+    closed_count: int
+
+
+class WeeklyTicketCount(BaseModel):
+    week: str  # YYYY-Www
+    opened_count: int
+    closed_count: int
+
+
+class MonthlyTicketCount(BaseModel):
+    month: str  # YYYY-MM
+    opened_count: int
+    closed_count: int
+
+
+class SectionStats(BaseModel):
+    section: str
+    label: Optional[str] = None
+    emoji: Optional[str] = None
+    active_count: int
+    closed_count: int
+    total_count: int
+
+
+class StaffActivityStats(BaseModel):
+    staff_id: str
+    staff_name: Optional[str] = None
+    claimed_active: int
+    closed_total: int
+    total_handled: int
+
+
+class ResolutionTimeStats(BaseModel):
+    average_seconds: Optional[float] = None
+    min_seconds: Optional[int] = None
+    max_seconds: Optional[int] = None
+    median_seconds: Optional[float] = None
+    sample_size: int = 0
+
+
+class SlaStatistics(BaseModel):
+    sla_target_seconds: int
+    active_breached: int
+    active_warning: int
+    active_pending: int
+    active_responded: int
+    total_active_evaluated: int
+    compliance_rate: Optional[float] = None
+
+
+class ApplicationsStatistics(BaseModel):
+    pending_review: int
+    in_progress_dm: int
+    historical_processed_total: Optional[int] = None
+    historical_data_available: bool = False
+
+
+class GuildStatisticsResponse(BaseModel):
+    guild_id: str
+    timeframe_days: int
+    tickets_daily: list[DailyTicketCount] = Field(default_factory=list)
+    tickets_weekly: list[WeeklyTicketCount] = Field(default_factory=list)
+    tickets_monthly: list[MonthlyTicketCount] = Field(default_factory=list)
+    tickets_by_section: list[SectionStats] = Field(default_factory=list)
+    tickets_by_staff: list[StaffActivityStats] = Field(default_factory=list)
+    resolution_time: ResolutionTimeStats
+    sla: SlaStatistics
+    applications: ApplicationsStatistics
+    data_freshness_timestamp: int

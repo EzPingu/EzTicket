@@ -218,6 +218,12 @@ class TicketService:
         if live_guild and live_channel:
             await update_staff_panel_message(live_guild, live_channel, ticket)
 
+        try:
+            from manager_backend.services.stats_service import stats_service
+            stats_service.invalidate_cache(gid_str)
+        except Exception as _cache_err:
+            log.warning("Cache invalidation dopo claim fallita (non bloccante): %s", _cache_err)
+
         message = (
             f"Ticket #{ticket.get('number', 0)} preso in carico con successo."
             if claimed
@@ -279,6 +285,12 @@ class TicketService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=res.get("message", "Operazione non valida o ticket già in chiusura."),
                 )
+
+        try:
+            from manager_backend.services.stats_service import stats_service
+            stats_service.invalidate_cache(gid_str)
+        except Exception as _cache_err:
+            log.warning("Cache invalidation dopo close fallita (non bloccante): %s", _cache_err)
 
         return TicketCloseResponse(
             success=True,
