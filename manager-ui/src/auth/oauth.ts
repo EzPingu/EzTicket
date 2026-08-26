@@ -16,6 +16,11 @@ async function challenge(verifier: string) {
   return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+function safeOpenUrlError(cause: unknown) {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return detail.replace(/https?:\/\/\S+/gi, "[URL OAuth omesso]");
+}
+
 export async function loginWithDiscord() {
   if (!clientId) throw new Error("Discord OAuth non configurato.");
   if (!isTauri()) {
@@ -35,7 +40,14 @@ export async function loginWithDiscord() {
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
-  await openUrl(`https://discord.com/oauth2/authorize?${params.toString()}`);
+  const authorizationUrl = `https://discord.com/oauth2/authorize?${params.toString()}`;
+  try {
+    await openUrl(authorizationUrl);
+  } catch (cause) {
+    const detail = safeOpenUrlError(cause);
+    console.error("Discord OAuth: openUrl() non ha aperto il browser.", detail);
+    throw new Error(`Impossibile aprire il browser per Discord OAuth. ${detail}`);
+  }
   const callback = await invoke<{ code?: string; state?: string; error?: string }>("wait_oauth_callback");
   if (callback.error) throw new Error("Discord ha annullato l'autenticazione.");
   if (!callback.code || callback.state !== state) throw new Error("La verifica di sicurezza OAuth non è riuscita.");

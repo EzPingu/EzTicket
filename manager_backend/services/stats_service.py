@@ -9,9 +9,12 @@ from __future__ import annotations
 import logging
 import statistics
 import time
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+import discord
 
 from config import cfg, sla_seconds
 from manager_backend.models.schemas import (
@@ -19,7 +22,9 @@ from manager_backend.models.schemas import (
     DailyTicketCount,
     DashboardSummaryResponse,
     GuildStatisticsResponse,
+    LatestMemberResponse,
     MonthlyTicketCount,
+    OnlineStaffMemberResponse,
     ResolutionTimeStats,
     SectionStats,
     SlaStatistics,
@@ -47,6 +52,27 @@ class StatsService:
         else:
             self._cache.clear()
 
+    async def prepare_dashboard_members(self, guild_id: str | int) -> None:
+        """Carica i membri della guild solo quando il conteggio staff lo richiede."""
+        gid_str = str(guild_id)
+        gconf = cfg.peek(gid_str)
+        if not gconf or not gconf.get("staff_role"):
+            return
+        # Le presenze cambiano indipendentemente dai ticket: non servono dati
+        # Dashboard precedenti quando la lista online viene richiesta.
+        self.invalidate_cache(gid_str)
+        live_guild = _get_guild(int(gid_str)) if gid_str.isdigit() else None
+        if live_guild is None or live_guild.chunked:
+            return
+        try:
+            await live_guild.chunk(cache=True)
+        except (discord.ClientException, discord.HTTPException, asyncio.TimeoutError):
+            log.warning(
+                "Chunking membri di %s (%s) non riuscito: il conteggio staff potrebbe essere parziale.",
+                live_guild.name,
+                live_guild.id,
+            )
+
     def get_dashboard_summary(
         self,
         guild_id: str | int,
@@ -66,6 +92,10 @@ class StatsService:
         if gconf is None or gconf.get("left_at") is not None:
             empty_resp = DashboardSummaryResponse(
                 guild_id=gid_str,
+                server_member_count=None,
+                staff_member_count=0,
+                latest_member=None,
+                online_staff=[],
                 active_tickets=0,
                 closed_tickets_total=0,
                 pending_applications=0,
@@ -86,6 +116,47 @@ class StatsService:
         raw_history = cfg.guild_history(gid_str)
         raw_apps = gconf.get("candidature_summary_messages") or {}
         sections = gconf.get("sections") or {}
+        live_guild = _get_guild(int(gid_str)) if gid_str.isdigit() else None
+
+        server_member_count: Optional[int] = None
+        staff_member_count = 0
+        latest_member: Optional[LatestMemberResponse] = None
+        online_staff: list[OnlineStaffMemberResponse] = []
+        if live_guild:
+            server_member_count = live_guild.member_count
+            raw_staff_role_id = gconf.get("staff_role")
+            staff_role_id = int(raw_staff_role_id) if str(raw_staff_role_id).isdigit() else None
+            if staff_role_id is not None:
+                staff_role = live_guild.get_role(staff_role_id)
+                staff_member_count = sum(
+                    1
+                    for member in live_guild.members
+                    if any(role.id == staff_role_id for role in member.roles)
+                )
+                if staff_role:
+                    online_staff = [
+                        OnlineStaffMemberResponse(
+                            id=str(member.id),
+                            username=member.name,
+                            avatar=str(member.display_avatar.url) if member.display_avatar else None,
+                            role=staff_role.name,
+                            roles=[role.name for role in member.roles if role.id != live_guild.id],
+                            status=member.status.name,
+                        )
+                        for member in live_guild.members
+                        if member.status != discord.Status.offline
+                        and any(role.id == staff_role.id for role in member.roles)
+                    ]
+            joined_members = [member for member in live_guild.members if member.joined_at is not None]
+            if joined_members:
+                member = max(joined_members, key=lambda item: item.joined_at)
+                latest_member = LatestMemberResponse(
+                    id=str(member.id),
+                    username=member.name,
+                    global_name=getattr(member, "global_name", None),
+                    avatar=str(member.display_avatar.url) if member.display_avatar else None,
+                    joined_at=int(member.joined_at.timestamp()),
+                )
 
         # 1. Conteggi base
         active_count = len(raw_active)
@@ -192,6 +263,10 @@ class StatsService:
 
         response = DashboardSummaryResponse(
             guild_id=gid_str,
+            server_member_count=server_member_count,
+            staff_member_count=staff_member_count,
+            latest_member=latest_member,
+            online_staff=online_staff,
             active_tickets=active_count,
             closed_tickets_total=closed_count,
             pending_applications=pending_apps_count,

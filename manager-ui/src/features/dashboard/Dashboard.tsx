@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleAlert, Clock3, MoreHorizontal, TrendingUp, Users } from "lucide-react";
+import { Hash, House, LifeBuoy, ShieldCheck, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getDashboard } from "../../api/dashboard.api";
 import { ApiError } from "../../api/client";
@@ -8,24 +8,253 @@ export function Dashboard({ token, guildId, guildName, user, isRefreshing, onUna
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const load = async () => { setLoading(true); setError(null); try { setData(await getDashboard(token, guildId, isRefreshing)); } catch (cause) { if (cause instanceof ApiError && cause.status === 401) { onUnauthorized(); return; } if (cause instanceof ApiError && cause.status === 403) setError("Non hai i permessi per visualizzare questa dashboard."); else if (cause instanceof ApiError && cause.status === 404) setError("Dashboard non disponibile per questo server."); else setError(cause instanceof Error ? cause.message : "Errore di caricamento."); } finally { setLoading(false); } };
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      setData(await getDashboard(token, guildId, isRefreshing));
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) {
+        onUnauthorized();
+        return;
+      }
+
+      if (cause instanceof ApiError && cause.status === 403) {
+        setError("Non hai i permessi per visualizzare questa dashboard.");
+      } else if (cause instanceof ApiError && cause.status === 404) {
+        setError("Dashboard non disponibile per questo server.");
+      } else {
+        setError(cause instanceof Error ? cause.message : "Errore di caricamento.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => { void load(); }, [token, guildId]);
   useEffect(() => { if (isRefreshing) void load(); }, [isRefreshing]);
+
   if (loading) return <div className="full-state"><span className="button-spinner" />Caricamento dashboard...</div>;
-  if (error || !data) return <div className="state-card state-card--error"><strong>Dashboard non disponibile</strong><span>{error}</span><button className="secondary-button" onClick={() => void load()}>Riprova</button></div>;
-  const sla = data.sla_summary;
+
+  if (error || !data) {
+    return (
+      <div className="state-card state-card--error">
+        <strong>Dashboard non disponibile</strong>
+        <span>{error}</span>
+        <button className="secondary-button" onClick={() => void load()}>
+          Riprova
+        </button>
+      </div>
+    );
+  }
+
   const sectionEntries = Object.entries(data.tickets_by_section);
-  return <div className={`dashboard ${isRefreshing ? "dashboard--refreshing" : ""}`}><div className="page-heading"><div><span className="eyebrow">Overview / {guildName}</span><h1>Buongiorno, {user.global_name ?? user.username} <span className="wave">✦</span></h1><p>Ecco cosa sta succedendo nella tua community oggi.</p></div><div className="heading-meta"><span className="live-pill"><i /> Live</span><span>Ultimo aggiornamento: {new Date(data.data_freshness_timestamp * 1000).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</span></div></div>
-    <div className="kpi-grid"><Kpi title="Ticket attivi" value={data.active_tickets} icon={<span className="life-icon">◉</span>} accent="purple" /><Kpi title="Ticket chiusi" value={data.closed_tickets_total} detail="totale" icon={<CheckCircle2 size={19} />} accent="green" /><Kpi title="Candidature" value={data.pending_applications} detail="da revisionare" icon={<Users size={19} />} accent="orange" /><Kpi title="SLA compliance" value={data.sla_compliance_rate == null ? null : `${data.sla_compliance_rate}%`} icon={<TrendingUp size={19} />} accent="blue" /></div>
-    <div className="dashboard-grid"><section className="panel chart-panel"><div className="panel-heading"><div><h2>Distribuzione ticket</h2><span>Stato attuale</span></div><MoreHorizontal size={18} /></div><div className="section-list">{Object.entries(data.tickets_by_status).map(([label, count]) => <SectionRow key={label} label={label} count={count} total={data.active_tickets + data.closed_tickets_total} />)}</div></section>
-      <section className="panel sla-panel"><div className="panel-heading"><div><h2>Stato SLA</h2><span>Ticket attivi in questo momento</span></div></div><div className="sla-score"><div className="ring" style={{ background: `conic-gradient(#62d7a3 0 ${data.sla_compliance_rate ?? 0}%,#2a3036 ${data.sla_compliance_rate ?? 0}% 100%)` }}><div><strong>{data.sla_compliance_rate == null ? "—" : `${data.sla_compliance_rate}%`}</strong><span>in target</span></div></div></div><div className="sla-rows">{Object.entries(sla).map(([label, value]) => <SlaRow key={label} label={label} value={value} />)}</div></section>
-      <section className="panel activity-panel"><div className="panel-heading"><div><h2>Volumi</h2><span>Finestre temporali disponibili</span></div></div><div className="metric-list"><Metric label="Oggi" value={data.tickets_today} /><Metric label="Questa settimana" value={data.tickets_this_week} /><Metric label="Questo mese" value={data.tickets_this_month} /></div></section>
-      <section className="panel section-panel"><div className="panel-heading"><div><h2>Ticket per sezione</h2><span>Distribuzione attuale</span></div></div><div className="section-list">{sectionEntries.map(([label, count]) => <SectionRow key={label} label={label} count={count} total={sectionEntries.reduce((sum, [, value]) => sum + value, 0)} />)}</div></section></div>
-    <div className="dashboard-footer"><span><Clock3 size={14} /> Tempo medio di risoluzione <strong>{formatSeconds(data.average_resolution_time_seconds)}</strong></span><span><CircleAlert size={14} /> Prima risposta media <strong>{formatSeconds(data.average_first_response_time_seconds)}</strong></span></div>
-  </div>;
+  const onlineStaff = data.online_staff ?? [];
+
+  return (
+    <div className={`dashboard ${isRefreshing ? "dashboard--refreshing" : ""}`}>
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">Overview / {guildName}</span>
+          <h1>Buongiorno, {user.global_name ?? user.username} <span className="wave">✦</span></h1>
+          <p>Ecco cosa sta succedendo nella tua community oggi.</p>
+        </div>
+
+        <div className="heading-meta">
+          <span className="live-pill"><i /> Live</span>
+          <span>
+            Ultimo aggiornamento: {new Date(data.data_freshness_timestamp * 1000).toLocaleTimeString("it-IT", {
+              hour: "2-digit",
+              minute: "2-digit"
+            })}
+          </span>
+        </div>
+      </div>
+
+
+      <div className="dashboard-grid">
+
+        <section className="panel overview-panel">
+          <div className="panel-heading">
+            <div>
+              <h2><House size={16} /> Panoramica Server</h2>
+              <span>Informazioni principali della community</span>
+            </div>
+          </div>
+
+          <div className="overview-list">
+            <OverviewMetric label="Membri totali" value={data.server_member_count} icon={<Users size={20} />} />
+            <OverviewMetric label="Ticket aperti" value={data.active_tickets} icon={<LifeBuoy size={20} />} />
+            <OverviewMetric label="Staff totale" value={data.staff_member_count} icon={<ShieldCheck size={20} />} />
+          </div>
+        </section>
+
+
+        <section className="panel latest-member-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Ultimo membro entrato</h2>
+              <span>Accesso piu recente alla community</span>
+            </div>
+          </div>
+
+          {data.latest_member ? (
+            <div className="latest-member">
+              <div className="latest-member-avatar">
+                {data.latest_member.avatar
+                  ? <img src={data.latest_member.avatar} alt="" />
+                  : data.latest_member.username.slice(0, 2).toUpperCase()
+                }
+              </div>
+
+              <div className="latest-member-copy">
+                <strong>{data.latest_member.global_name ?? data.latest_member.username}</strong>
+                <span>@{data.latest_member.username}</span>
+                <time>
+                  {new Date(data.latest_member.joined_at * 1000).toLocaleString("it-IT")}
+                </time>
+              </div>
+            </div>
+          ) : (
+            <div className="latest-member-empty">N/D</div>
+          )}
+        </section>
+
+
+        <section className="panel online-staff-panel">
+
+          <div className="panel-heading">
+            <div>
+              <h2>
+                <span className="online-staff-title-dot" /> Staffer Attualmente Online
+              </h2>
+
+              <span>
+                {onlineStaff.length
+                  ? `${onlineStaff.length} staffer connessi ora`
+                  : "Nessuno staffer online"}
+              </span>
+            </div>
+          </div>
+
+
+          {onlineStaff.length ? (
+
+            <div className={`online-staff-list ${onlineStaff.length > 6 ? "online-staff-list--scrollable" : ""}`}>
+
+              {onlineStaff.map((staffer) => (
+
+                <div className="online-staff-row" key={staffer.id}>
+
+                  <div className="online-staff-avatar">
+
+                    {staffer.avatar
+                      ? <img src={staffer.avatar} alt="" />
+                      : staffer.username.slice(0, 2).toUpperCase()
+                    }
+
+                    <span />
+
+                  </div>
+
+
+                  <div className="online-staff-copy">
+
+                    <strong>{staffer.username}</strong>
+
+                    <small>
+                      <Hash size={10} />
+                      {staffer.id}
+                    </small>
+
+                    <span className="online-staff-roles-label">Ruoli:</span>
+                    <div className="online-staff-roles">
+                      {(staffer.roles?.length ? staffer.roles : staffer.role ? [staffer.role] : []).map((role) => (
+                        <em key={role}>{role}</em>
+                      ))}
+                    </div>
+
+                  </div>
+
+
+                  <span className="online-staff-status">
+                    {staffer.status}
+                  </span>
+
+                </div>
+
+              ))}
+
+            </div>
+
+          ) : (
+
+            <div className="online-staff-empty">
+              Gli staffer online appariranno qui.
+            </div>
+
+          )}
+
+        </section>
+
+
+        <section className="panel section-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Ticket per sezione</h2>
+              <span>Distribuzione attuale</span>
+            </div>
+          </div>
+
+          <div className="section-list">
+            {sectionEntries.map(([label, count]) => (
+              <SectionRow
+                key={label}
+                label={label}
+                count={count}
+                total={sectionEntries.reduce((sum, [, value]) => sum + value, 0)}
+              />
+            ))}
+          </div>
+        </section>
+
+      </div>
+    </div>
+  );
 }
-function Kpi({ title, value, detail, icon, accent }: { title: string; value: number | string | null; detail?: string; icon: React.ReactNode; accent: string }) { return <div className="kpi-card"><div className={`kpi-icon kpi-icon--${accent}`}>{icon}</div><span className="kpi-title">{title}</span><div className="kpi-value">{value ?? "—"}</div>{detail && <div className="kpi-change">{detail}</div>}</div>; }
-function SlaRow({ label, value }: { label: string; value: number }) { return <div className="sla-row"><span><i className="status-dot status-dot--green" />{label}</span><strong>{value}</strong></div>; }
-function SectionRow({ label, count, total }: { label: string; count: number; total: number }) { const percent = total ? (count / total) * 100 : 0; return <div className="section-row"><div className="section-row-top"><span>{label}</span><strong>{count}<small> ticket</small></strong></div><div className="progress-track"><div className="progress-fill progress-fill--purple" style={{ width: `${percent}%` }} /></div></div>; }
-function Metric({ label, value }: { label: string; value: number }) { return <div className="metric-row"><span>{label}</span><strong>{value}</strong></div>; }
-function formatSeconds(value: number | null) { if (value == null) return "—"; const hours = Math.floor(value / 3600); const minutes = Math.round((value % 3600) / 60); return hours ? `${hours}h ${minutes}m` : `${minutes}m`; }
+
+
+function SectionRow({ label, count, total }: { label: string; count: number; total: number }) {
+  const percent = total ? (count / total) * 100 : 0;
+
+  return (
+    <div className="section-row">
+      <div className="section-row-top">
+        <span>{label}</span>
+        <strong>{count}<small> ticket</small></strong>
+      </div>
+
+      <div className="progress-track">
+        <div className="progress-fill progress-fill--purple" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+
+function OverviewMetric({ label, value, icon }: { label: string; value: number | null; icon: React.ReactNode }) {
+  return (
+    <div className="overview-row">
+      <span className="overview-label">
+        {icon}
+        {label}
+      </span>
+
+      <strong>
+        {value ?? "N/D"}
+      </strong>
+    </div>
+  );
+}

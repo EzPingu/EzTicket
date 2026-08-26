@@ -99,7 +99,11 @@ class DiscordOAuthClient:
         client = await self._get_client()
         should_close = self._http is None
         try:
-            resp = await client.get(USER_GUILDS_ENDPOINT, headers=headers)
+            resp = await client.get(
+                USER_GUILDS_ENDPOINT,
+                headers=headers,
+                params={"with_counts": "true"},
+            )
             if resp.status_code != 200:
                 return []
             return resp.json()

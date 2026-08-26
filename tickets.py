@@ -15,6 +15,7 @@ import io
 import logging
 import re
 from datetime import datetime, timezone
+from typing import Awaitable, TypeVar
 
 import discord
 from discord import app_commands
@@ -70,15 +71,99 @@ SLA_RETRY_SECONDS = 60
 # dopo una riconnessione o su un altro shard.
 # ---------------------------------------------------------------------------
 _client: discord.Client | None = None
+_client_loop: asyncio.AbstractEventLoop | None = None
+_T = TypeVar("_T")
 
 
 def bind_client(client: discord.Client) -> None:
-    global _client
+    global _client, _client_loop
     _client = client
+    try:
+        _client_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _client_loop = None
 
 
 def _get_guild(guild_id: int) -> discord.Guild | None:
     return _client.get_guild(int(guild_id)) if _client else None
+
+
+async def run_on_discord_loop(coro: Awaitable[_T]) -> _T:
+    """Esegue una coroutine sul loop gateway del bot, anche da FastAPI."""
+    if _client_loop is None:
+        return await coro
+    if not _client_loop.is_running():
+        raise RuntimeError("Il loop Discord non è disponibile.")
+    current_loop = asyncio.get_running_loop()
+    if current_loop is _client_loop:
+        return await coro
+    future = asyncio.run_coroutine_threadsafe(coro, _client_loop)
+    try:
+        return await asyncio.wrap_future(future)
+    except asyncio.CancelledError:
+        future.cancel()
+        raise
+
+
+async def _get_channel_messages(guild_id: int, channel_id: int) -> list[dict]:
+    guild = _get_guild(guild_id)
+    channel = guild.get_channel(channel_id) if guild else None
+    if not isinstance(channel, discord.TextChannel):
+        return []
+    try:
+        messages = [message async for message in channel.history(limit=None, oldest_first=True)]
+    except (discord.Forbidden, discord.HTTPException):
+        return []
+    return [
+        {
+            "id": str(message.id),
+            "author_id": str(message.author.id),
+            "author_name": message.author.display_name,
+            "author_avatar": str(message.author.display_avatar.url),
+            "content": message.content or "",
+            "created_at": int(message.created_at.timestamp()),
+            "attachments": [attachment.url for attachment in message.attachments],
+            "is_staff": is_staff_member(message.author, guild_id),
+        }
+        for message in messages
+        if message.content or message.attachments or message.embeds
+    ]
+
+
+async def get_channel_messages(guild_id: int | str, channel_id: int | str) -> list[dict]:
+    """Recupera i messaggi dal canale usando il loop del client Discord."""
+    return await run_on_discord_loop(_get_channel_messages(int(guild_id), int(channel_id)))
+
+
+async def _close_ticket_from_manager(
+    guild_id: int,
+    channel_id: int,
+    user_id: int,
+    reason: str | None,
+) -> dict:
+    guild = _get_guild(guild_id)
+    channel = guild.get_channel(channel_id) if guild else None
+    closer = await fetch_member(guild, user_id) if guild else None
+    return await close_ticket(
+        guild,
+        channel if isinstance(channel, discord.TextChannel) else None,
+        closer if closer is not None else user_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        reason=reason,
+    )
+
+
+async def close_ticket_from_manager(
+    guild_id: int | str,
+    channel_id: int | str,
+    user_id: int,
+    reason: str | None = None,
+) -> dict:
+    """Instrada la chiusura Manager nel loop Discord e nel core condiviso."""
+    return await run_on_discord_loop(
+        _close_ticket_from_manager(int(guild_id), int(channel_id), user_id, reason)
+    )
 
 
 # Task asyncio in corso per i timer SLA/anti-abbandono. La chiave include il
@@ -274,7 +359,7 @@ def build_staff_panel_embed(guild: discord.Guild, section: dict, ticket: dict) -
             value="Solo chi ha preso in carico e gli amministratori del server possono scrivere qui.",
             inline=False,
         )
-    embed.set_footer(text="Usa i pulsanti qui sotto · /rispondi per scrivere")
+    embed.set_footer(text="Usa i pulsanti qui sotto · lo staff può rispondere qui")
     return embed
 
 
@@ -336,63 +421,61 @@ async def get_or_create_webhook(channel: discord.TextChannel, name: str = "Ticke
         return None
 
 
-async def handle_rispondi(interaction: discord.Interaction, messaggio: str):
-    """Gestisce /rispondi: lo staff scrive nel ticket tramite webhook con il
-    proprio nome e la propria immagine profilo al posto del messaggio normale."""
-    if interaction.guild is None:
-        await interaction.response.send_message("⚠️ Questo comando funziona solo dentro un server.", ephemeral=True)
-        return
-    gconf = cfg.guild(interaction.guild.id)
-    ticket = gconf["tickets"].get(str(interaction.channel.id))
-    if not ticket:
-        await interaction.response.send_message("⚠️ Questo comando va usato dentro un canale ticket.", ephemeral=True)
-        return
-    if not await require_staff(interaction, "🚫 Solo lo staff può rispondere tramite questo comando."):
-        return
+async def _send_ticket_reply(
+    guild_id: int,
+    channel_id: int,
+    staff_id: int,
+    content: str,
+) -> dict:
+    guild = _get_guild(guild_id)
+    gconf = cfg.peek(guild_id)
+    ticket = (gconf or {}).get("tickets", {}).get(str(channel_id))
+    channel = guild.get_channel(channel_id) if guild else None
+    if not guild or not isinstance(channel, discord.TextChannel) or not ticket:
+        return {"success": False, "status": "not_found", "message": "Ticket non trovato o già chiuso."}
+    staff = await fetch_member(guild, staff_id)
+    if staff is None or not is_staff_member(staff, guild_id):
+        return {"success": False, "status": "forbidden", "message": "Solo lo staff del server può rispondere."}
     claimed_by = ticket.get("claimed_by")
-    if claimed_by and claimed_by != interaction.user.id and not is_guild_admin(interaction):
-        await interaction.response.send_message(
-            f"🔒 Questo ticket è stato preso in carico da <@{claimed_by}>: solo lui/lei e gli "
-            f"amministratori del server possono rispondere.",
-            ephemeral=True,
-        )
-        return
-
-    webhook = await get_or_create_webhook(interaction.channel, "Ticket Reply")
+    if claimed_by and int(claimed_by) != staff_id and not is_guild_admin(staff):
+        return {"success": False, "status": "forbidden", "message": "Questo ticket è stato preso in carico da un altro staffer."}
+    webhook = await get_or_create_webhook(channel, "Ticket Reply")
     if webhook is None:
-        await interaction.response.send_message(
-            "❌ Non riesco a creare/usare un webhook in questo canale (permessi mancanti: `Gestisci Webhook`).",
-            ephemeral=True,
-        )
-        return
-
+        return {"success": False, "status": "webhook_forbidden", "message": "Permesso Gestisci Webhook mancante."}
     try:
-        await webhook.send(
-            content=messaggio,
-            username=interaction.user.display_name[:80] or "Staff",
-            avatar_url=interaction.user.display_avatar.url,
+        sent = await webhook.send(
+            content=content.strip(),
+            username=staff.display_name[:80] or "Staff",
+            avatar_url=staff.display_avatar.url,
             allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            wait=True,
         )
     except discord.HTTPException:
-        await interaction.response.send_message("❌ Invio del messaggio fallito.", ephemeral=True)
-        return
-
-    # Lo staff può scrivere nel ticket SOLO con /rispondi, quindi è qui che va
-    # registrata la prima risposta: altrimenti i timer SLA/anti-abbandono non
-    # verrebbero mai fermati e scatterebbero avvisi falsi.
-    changed = False
+        return {"success": False, "status": "send_failed", "message": "Invio del messaggio fallito."}
     if not ticket.get("first_response_at"):
         ticket["first_response_at"] = int(datetime.now(timezone.utc).timestamp())
-        cancel_sla_check(interaction.guild.id, interaction.channel.id)
-        changed = True
-    if ticket.get("claimed_by") == interaction.user.id and not ticket.get("claimer_responded"):
+        cancel_sla_check(guild_id, channel_id)
+    if ticket.get("claimed_by") == staff_id and not ticket.get("claimer_responded"):
         ticket["claimer_responded"] = True
-        cancel_claim_check(interaction.guild.id, interaction.channel.id)
-        changed = True
-    if changed:
-        cfg.save()
+        cancel_claim_check(guild_id, channel_id)
+    cfg.save()
+    return {
+        "success": True,
+        "guild_id": str(guild_id),
+        "channel_id": str(channel_id),
+        "message_id": str(sent.id),
+        "message": "Messaggio inviato nel ticket.",
+    }
 
-    await interaction.response.send_message("✅ Messaggio inviato nel ticket.", ephemeral=True)
+
+async def reply_to_ticket(
+    guild_id: int | str,
+    channel_id: int | str,
+    staff_id: int,
+    content: str,
+) -> dict:
+    """Invia la risposta tramite il webhook del ticket nel loop Discord."""
+    return await run_on_discord_loop(_send_ticket_reply(int(guild_id), int(channel_id), staff_id, content))
 
 
 async def handle_risponditicket(interaction: discord.Interaction, utente: discord.Member):
@@ -453,7 +536,7 @@ async def handle_slachannel(interaction: discord.Interaction, canale: discord.Te
     )
 
 
-async def send_transcript(guild: discord.Guild, channel: discord.TextChannel, ticket: dict, closer: discord.Member) -> bool:
+async def send_transcript(guild: discord.Guild, channel: discord.TextChannel, ticket: dict, closer: discord.Member | discord.User | int) -> bool:
     """Invia un embed riassuntivo (apertura, aperto da, claimato da, chiuso da/quando) più un
     file .txt con il log completo dei messaggi (firmato in fondo) nel canale transcript
     configurato, e in DM a chi ha aperto il ticket e a chi lo ha claimato."""
@@ -465,6 +548,8 @@ async def send_transcript(guild: discord.Guild, channel: discord.TextChannel, ti
     claimed_by = ticket.get("claimed_by")
     opened_at = ticket.get("opened_at")
     closed_at = int(datetime.now(timezone.utc).timestamp())
+    closer_id = int(closer.id if hasattr(closer, "id") else closer)
+    closer_mention = closer.mention if hasattr(closer, "mention") else f"<@{closer_id}>"
 
     embed = discord.Embed(
         title=f"📁 Transcript · Ticket #{ticket.get('number', 0):04d} · #{channel.name}",
@@ -492,7 +577,7 @@ async def send_transcript(guild: discord.Guild, channel: discord.TextChannel, ti
     )
     embed.add_field(
         name="🔒 Chiuso da",
-        value=closer.mention,
+        value=closer_mention,
         inline=False,
     )
     embed.add_field(
@@ -507,11 +592,21 @@ async def send_transcript(guild: discord.Guild, channel: discord.TextChannel, ti
     except discord.Forbidden:
         messages = []
 
-    text_lines = [
-        f"[{m.created_at.strftime('%Y-%m-%d %H:%M:%S')}] {m.author} ({m.author.id}): {m.content}"
-        for m in messages
-        if m.content or m.embeds or m.attachments
-    ]
+    text_lines = []
+    for message in messages:
+        parts = [message.content] if message.content else []
+        for message_embed in message.embeds:
+            if message_embed.description:
+                parts.append(message_embed.description)
+            if message_embed.footer and message_embed.footer.text:
+                parts.append(f"[{message_embed.footer.text}]")
+        if message.attachments:
+            parts.extend(f"[Allegato: {attachment.url}]" for attachment in message.attachments)
+        if parts:
+            text_lines.append(
+                f"[{message.created_at.strftime('%Y-%m-%d %H:%M:%S')}] "
+                f"{message.author} ({message.author.id}): {' '.join(parts)}"
+            )
     if not text_lines:
         text_lines.append("Nessun messaggio registrato.")
     text_lines.append("")
@@ -519,22 +614,24 @@ async def send_transcript(guild: discord.Guild, channel: discord.TextChannel, ti
     txt_bytes = "\n".join(text_lines).encode("utf-8")
     txt_filename = f"transcript-{channel.name}.txt"
 
-    async def _deliver(target) -> None:
+    async def _deliver(target) -> str | None:
         try:
             await target.send(embed=embed)
-            await target.send(
+            transcript_message = await target.send(
                 content="📄 Trascrizione completa del ticket:",
                 file=discord.File(fp=io.BytesIO(txt_bytes), filename=txt_filename),
             )
+            return getattr(transcript_message, "jump_url", None)
         except (discord.Forbidden, discord.HTTPException):
-            pass
+            return None
 
     sent_to_channel = False
+    transcript_url = None
     if transcript_channel_id:
         transcript_channel = guild.get_channel(transcript_channel_id)
         if isinstance(transcript_channel, discord.TextChannel):
-            await _deliver(transcript_channel)
-            sent_to_channel = True
+            transcript_url = await _deliver(transcript_channel)
+            sent_to_channel = transcript_url is not None
 
     # DM a chi ha aperto il ticket e a chi lo ha claimato (se ancora nel server)
     notified_ids = set()
@@ -547,6 +644,8 @@ async def send_transcript(guild: discord.Guild, channel: discord.TextChannel, ti
         if claimer_member:
             await _deliver(claimer_member)
 
+    if transcript_url:
+        ticket["transcript_url"] = transcript_url
     return sent_to_channel
 
 
@@ -1391,7 +1490,7 @@ async def close_ticket(
         channel_name = channel.name if (channel and hasattr(channel, "name")) else str(cid)
 
         # 4. Transcript sicuro con gestione eccezioni (non blocca la chiusura)
-        if guild and channel and (isinstance(channel, discord.TextChannel) or hasattr(channel, "send")) and hasattr(closer, "mention"):
+        if guild and channel and (isinstance(channel, discord.TextChannel) or hasattr(channel, "send")):
             try:
                 transcript_sent = await send_transcript(guild, channel, ticket, closer)
             except Exception as exc:
@@ -1413,6 +1512,7 @@ async def close_ticket(
             "closed_at": closed_at,
             "duration_seconds": duration,
             "transcript_sent": transcript_sent,
+            "transcript_url": ticket.get("transcript_url"),
             "rating": None,
         }
         cfg.add_history_entry(gid, history_entry)
@@ -1428,8 +1528,12 @@ async def close_ticket(
                 try:
                     closer_name = closer_ref.mention if hasattr(closer_ref, "mention") else f"<@{closer_id}>"
                     await ch.delete(reason=f"Ticket chiuso da {closer_name}")
-                except (discord.Forbidden, discord.NotFound, Exception):
-                    pass
+                except discord.NotFound:
+                    log.info("Canale ticket %s:%s già eliminato.", gid, cid)
+                except discord.Forbidden:
+                    log.error("Permesso mancante per eliminare il canale ticket %s:%s.", gid, cid)
+                except discord.HTTPException as exc:
+                    log.error("Eliminazione canale ticket %s:%s fallita: %s", gid, cid, exc)
             _spawn(_delayed_delete(channel, closer))
 
 
@@ -1440,6 +1544,8 @@ async def close_ticket(
             "channel_id": str(cid),
             "closed_by": str(closer_id),
             "closed_at": closed_at,
+            "close_reason": reason,
+            "transcript_url": ticket.get("transcript_url"),
             "number": ticket.get("number"),
             "message": f"Ticket #{ticket.get('number', 0)} chiuso con successo.",
         }

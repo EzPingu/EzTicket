@@ -1,6 +1,6 @@
 """
 settings.py
-Gruppo di comandi /config: espone a OGNI server le impostazioni che nella
+Gruppi di comandi /config e /ezticket: espone a OGNI server le impostazioni che nella
 versione single-server erano cablate nel codice (tempi SLA e anti-abbandono, ore
 di inattività, ruoli assegnati da /staffaccettato, formato del nickname, team
 delle candidature, branding dei footer) più la lista degli amministratori del bot
@@ -511,3 +511,42 @@ class ConfigGroup(app_commands.Group):
 
 
 config_group = ConfigGroup()
+
+
+class ManagerGroup(app_commands.Group):
+    """Comandi di configurazione usati dal Manager per questa guild."""
+
+    def __init__(self):
+        super().__init__(
+            name="manager",
+            description="Impostazioni del Manager per questo server",
+            guild_only=True,
+        )
+
+    @app_commands.command(name="staffrole", description="[Admin server] Imposta il ruolo che identifica lo staff")
+    @app_commands.describe(ruolo="Ruolo Discord assegnato agli staffer di questo server")
+    async def staffrole(self, interaction: discord.Interaction, ruolo: discord.Role):
+        if not await require_guild_admin(interaction):
+            return
+        gconf = cfg.guild(interaction.guild.id)
+        gconf["staff_role"] = ruolo.id
+        cfg.save()
+        await interaction.response.send_message(
+            f"✅ Ruolo staff impostato: {ruolo.mention}",
+            ephemeral=True,
+        )
+
+
+class EzTicketGroup(app_commands.Group):
+    """Namespace dei comandi specifici di EzTicket Manager."""
+
+    def __init__(self):
+        super().__init__(
+            name="ezticket",
+            description="Comandi EzTicket",
+            guild_only=True,
+        )
+        self.add_command(ManagerGroup())
+
+
+ezticket_group = EzTicketGroup()

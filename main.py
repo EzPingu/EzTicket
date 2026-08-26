@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 
 import discord
@@ -49,7 +50,6 @@ from tickets import (
     bind_client,
     cancel_guild_timers,
     forget_deleted_ticket,
-    handle_rispondi,
     handle_risponditicket,
     handle_setlogticketstaff,
     handle_slachannel,
@@ -67,7 +67,7 @@ from candidature import (
     handle_addettocandidature,
     handle_candidatura_dm_answer,
 )
-from settings import config_group
+from settings import config_group, ezticket_group
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 log = logging.getLogger("ticketbot")
@@ -85,6 +85,7 @@ SHARD_COUNT = int(_raw_shards) if _raw_shards.isdigit() and int(_raw_shards) > 0
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True
 
 # Quanto attendere prima di aggiornare la presenza dopo un join/leave. Gli eventi
 # arrivano a raffica e change_presence è soggetto a rate limit sul gateway: li
@@ -137,6 +138,7 @@ class TicketBot(commands.AutoShardedBot):
         self.tree.add_command(candidatura_group)
         self.tree.add_command(domandestaff_group)
         self.tree.add_command(config_group)
+        self.tree.add_command(ezticket_group)
 
         # view persistenti: i bottoni/select continuano a funzionare dopo un riavvio
         self.add_view(TicketPanelView())
@@ -165,6 +167,23 @@ class TicketBot(commands.AutoShardedBot):
 
 
 bot = TicketBot()
+
+
+def start_manager_api():
+    import uvicorn
+
+    uvicorn.run(
+        "manager_backend.app:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=False,
+    )
+
+
+threading.Thread(
+    target=start_manager_api,
+    daemon=True,
+).start()
 
 
 # ---------------------------------------------------------------------------
@@ -474,8 +493,7 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
 async def on_message(message: discord.Message):
     """Gestisce due cose:
     1) nei DM: le risposte a un questionario di candidatura staff in corso
-    2) nei canali ticket: tracking risposte per SLA/anti-abbandono e il
-       blocco dei messaggi scritti a mano dallo staff (solo /rispondi)."""
+    2) nei canali ticket: tracking risposte per SLA/anti-abbandono."""
     if message.author.bot or message.webhook_id:
         return
 
@@ -509,50 +527,9 @@ async def on_message(message: discord.Message):
     if changed:
         cfg.save()
 
-    # Gli staffer devono rispondere ai ticket solo con /rispondi: un messaggio scritto
-    # a mano nel canale viene eliminato subito e sostituito da un avviso temporaneo
-    # nel canale stesso (si autodistrugge dopo pochi secondi, così resta visibile
-    # solo a chi lo ha appena scritto).
-    if message.author.id != ticket.get("opener") and is_staff_here:
-        try:
-            await message.delete()
-        except (discord.Forbidden, discord.NotFound):
-            pass
-
-        embed = discord.Embed(
-            description=(
-                f"⚠️ {message.author.mention}, puoi rispondere ai ticket solo con "
-                f"`/rispondi <messaggio>`.\nIl tuo messaggio è stato rimosso."
-            ),
-            color=discord.Color.orange(),
-        )
-        # In sottofondo: l'attesa di 8 secondi non deve bloccare l'elaborazione dei
-        # messaggi di tutti gli altri server.
-        _spawn(send_temporary_warning(message.channel, embed))
-
-
-async def send_temporary_warning(channel: discord.abc.Messageable, embed: discord.Embed, delay: float = 8.0) -> None:
-    try:
-        warn_msg = await channel.send(embed=embed)
-    except (discord.Forbidden, discord.HTTPException):
-        return
-    await asyncio.sleep(delay)
-    try:
-        await warn_msg.delete()
-    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-        pass
-
-
 # ---------------------------------------------------------------------------
 # Comandi standalone
 # ---------------------------------------------------------------------------
-
-@bot.tree.command(name="rispondi", description="Rispondi al ticket tramite webhook con il tuo nome e la tua foto profilo")
-@app_commands.describe(messaggio="Messaggio da inviare nel ticket al posto tuo")
-@app_commands.guild_only()
-async def rispondi(interaction: discord.Interaction, messaggio: str):
-    await handle_rispondi(interaction, messaggio)
-
 
 @bot.tree.command(name="risponditicket", description="Invia un promemoria di attività dentro il ticket corrente")
 @app_commands.describe(utente="Utente a cui inviare il promemoria")
@@ -662,8 +639,7 @@ async def help_command(interaction: discord.Interaction):
             "`/ticket add` · `/ticket remove` — aggiungi/rimuovi un utente\n"
             "`/ticket note` — aggiungi una nota interna\n"
             "`/ticket rename` · `/ticket move` — rinomina/sposta il ticket\n"
-            "`/rispondi <messaggio>` — **unico modo per scrivere nel ticket**: risponde tramite "
-            "webhook col tuo nome/pfp. Un messaggio scritto a mano viene eliminato\n"
+            "Lo staff può rispondere direttamente nel canale o dall'EzTicket Manager\n"
             "`/risponditicket <utente>` — invia un promemoria di attività al ticket\n"
             "Bottoni in ogni ticket: 🙋 Reclama · ➕ Aggiungi utente · 📄 Transcript · 🔒 Chiudi"
         ),

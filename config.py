@@ -345,6 +345,8 @@ class ConfigManager:
                              if str(k).isdigit() and isinstance(v, dict)}
         gconf["owner_ids"] = [int(v) for v in (gconf.get("owner_ids") or [])
                                if str(v).isdigit()]
+        staff_role = gconf.get("staff_role")
+        gconf["staff_role"] = int(staff_role) if str(staff_role).isdigit() else None
         gconf["owner_grants"] = {str(k): v for k, v in gconf["owner_grants"].items()
                                   if str(k).isdigit() and isinstance(v, dict)
                                   and v.get("source") == "manual"}
@@ -975,8 +977,12 @@ def is_guild_admin(interaction: discord.Interaction) -> bool:
 
 
 def is_staff_member(member: discord.Member, guild_id: int) -> bool:
-    """Staff di quel server: amministratore, ruolo staff globale della guild, o
-    ruolo staff di una sua sezione. Un membro di un altro server non è mai staff qui."""
+    """Verifica lo staff nel contesto della guild, senza condividere ruoli tra server.
+
+    Gli amministratori e i ruoli di sezione restano staff per compatibilità con
+    i comandi ticket; il ruolo globale viene letto dalla configurazione della
+    singola guild e, se assente, non autorizza membri aggiuntivi.
+    """
     if not isinstance(member, discord.Member):
         return False
     if member.guild.id != int(guild_id):
@@ -987,7 +993,8 @@ def is_staff_member(member: discord.Member, guild_id: int) -> bool:
     if not gconf:
         return False
     role_ids = {r.id for r in member.roles}
-    if gconf.get("staff_role") in role_ids:
+    staff_role_id = gconf.get("staff_role")
+    if staff_role_id is not None and str(staff_role_id).isdigit() and int(staff_role_id) in role_ids:
         return True
     for section in (gconf.get("sections") or {}).values():
         if section.get("staff_role_id") in role_ids:

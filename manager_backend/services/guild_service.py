@@ -165,6 +165,7 @@ class GuildService:
                     id=gid_str,
                     name=guild_name,
                     icon=guild_icon,
+                    member_count=dg_meta.get("approximate_member_count"),
                     role=access.role,
                     is_owner=access.is_owner,
                     is_admin=access.is_admin,

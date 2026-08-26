@@ -35,6 +35,7 @@ async def get_guild_dashboard(
     Accesso consentito esclusivamente ai membri dello staff e agli amministratori autorizzati.
     Filtro rigorosamente per-guild e protezione IDOR.
     """
+    await stats_service.prepare_dashboard_members(guild_id)
     summary = stats_service.get_dashboard_summary(guild_id, force_refresh=force_refresh)
 
     audit_logger.record(

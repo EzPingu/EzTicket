@@ -7,6 +7,7 @@ import { LoginScreen } from "../auth/LoginScreen";
 import { ServerSelectionScreen } from "../features/guilds/ServerSelectionScreen";
 import { Layout } from "../layout/Layout";
 import { Dashboard } from "../features/dashboard/Dashboard";
+import { TicketWorkspace } from "../features/tickets/TicketWorkspace";
 
 export type ViewKey = "Dashboard" | "Ticket" | "Candidature" | "Storico" | "Statistiche" | "Configurazione" | "Audit";
 
@@ -65,10 +66,10 @@ function AuthenticatedApp() {
   if (status === "anonymous") return <LoginScreen />;
   if (selectionLoading) return <div className="full-state"><span className="button-spinner" />Caricamento del server...</div>;
   if (!selectedGuild || !guildDetail || !guildMe) {
-    return <ServerSelectionScreen guilds={guilds} loading={false} error={selectionError} onSelect={selectGuild} onRetry={() => void reloadGuilds().catch((cause) => setSelectionError(formatError(cause)))} />;
+    return <ServerSelectionScreen guilds={guilds} loading={false} error={selectionError} user={user} onSelect={selectGuild} onRetry={() => void reloadGuilds().catch((cause) => setSelectionError(formatError(cause)))} onLogout={logout} />;
   }
   return <Layout activeView={activeView} onNavigate={setActiveView} guilds={guilds} guild={selectedGuild} detail={guildDetail} me={guildMe} user={user} onGuildChange={changeGuild} isRefreshing={refreshing} onRefresh={refresh} onLogout={logout} toast={toast}>
-    {activeView === "Dashboard" ? <Dashboard token={token!} guildId={selectedGuild.id} guildName={guildDetail.name ?? selectedGuild.name ?? "Server"} user={guildMe} isRefreshing={refreshing} onUnauthorized={expireSession} /> : <section className="placeholder-view"><span className="eyebrow">Workspace</span><h1>{activeView}</h1><p>Questa area sarà collegata in una milestone successiva.</p></section>}
+    {activeView === "Dashboard" ? <Dashboard token={token!} guildId={selectedGuild.id} guildName={guildDetail.name ?? selectedGuild.name ?? "Server"} user={guildMe} isRefreshing={refreshing} onUnauthorized={expireSession} /> : activeView === "Ticket" ? <TicketWorkspace token={token!} guildId={selectedGuild.id} isRefreshing={refreshing} onUnauthorized={expireSession} /> : <section className="placeholder-view"><span className="eyebrow">Workspace</span><h1>{activeView}</h1><p>Questa area sarà collegata in una milestone successiva.</p></section>}
   </Layout>;
 }
 

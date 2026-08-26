@@ -15,6 +15,8 @@ from manager_backend.models.schemas import (
     TicketCloseRequest,
     TicketCloseResponse,
     TicketDetailResponse,
+    TicketReplyRequest,
+    TicketReplyResponse,
     TicketSummaryResponse,
 )
 from manager_backend.security.dependencies import (
@@ -72,7 +74,7 @@ async def get_active_ticket_detail(
             detail="Identificativo channel_id non valido.",
         )
 
-    ticket = ticket_service.get_ticket_detail(guild_id, channel_id)
+    ticket = await ticket_service.get_ticket_detail(guild_id, channel_id)
     if ticket is None:
         audit_logger.record(
             "ACCESS_DENIED",
@@ -184,3 +186,38 @@ async def close_ticket(
         success=True,
     )
     return res
+
+
+@router.post("/{channel_id}/reply", response_model=TicketReplyResponse)
+async def reply_to_ticket(
+    guild_id: str,
+    channel_id: str,
+    body: TicketReplyRequest,
+    request: Request,
+    session: SessionData = Depends(get_current_session),
+    access: GuildAccessInfo = Depends(require_guild_staff),
+) -> TicketReplyResponse:
+    """Invia una risposta impersonando lo staff tramite webhook del ticket."""
+    if not channel_id.isdigit():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Identificativo channel_id non valido.")
+    try:
+        result = await ticket_service.reply_to_ticket(guild_id, channel_id, session.user_id, body.message)
+    except HTTPException as exc:
+        audit_logger.record(
+            "ACCESS_DENIED",
+            user_id=session.user_id,
+            guild_id=guild_id,
+            client_ip=get_client_ip(request),
+            details={"action": "REPLY_TICKET", "channel_id": channel_id, "error": exc.detail},
+            success=False,
+        )
+        raise
+    audit_logger.record(
+        "TICKET_REPLY",
+        user_id=session.user_id,
+        guild_id=guild_id,
+        client_ip=get_client_ip(request),
+        details={"action": "REPLY_TICKET", "channel_id": channel_id},
+        success=True,
+    )
+    return result

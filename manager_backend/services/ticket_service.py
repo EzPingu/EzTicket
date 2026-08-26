@@ -13,16 +13,18 @@ from typing import Any, Optional
 import discord
 from fastapi import HTTPException, status
 
-from config import cfg, fetch_member
+from config import cfg, fetch_member, is_staff_member
 from manager_backend.models.schemas import (
     TicketClaimResponse,
     TicketCloseResponse,
     TicketDetailResponse,
+    TicketMessageResponse,
     TicketSummaryResponse,
 )
 from tickets import (
     _get_guild,
-    close_ticket as core_close_ticket,
+    get_channel_messages,
+    close_ticket_from_manager,
     get_ticket_lock,
     toggle_claim as core_toggle_claim,
     update_staff_panel_message,
@@ -70,10 +72,12 @@ class TicketService:
 
             opener_id = ticket.get("opener")
             opener_name: Optional[str] = None
+            opener_avatar: Optional[str] = None
             if live_guild and opener_id:
                 member = live_guild.get_member(int(opener_id))
                 if member:
                     opener_name = member.display_name
+                    opener_avatar = str(member.display_avatar.url)
 
             sla_status = self.compute_sla_status(ticket)
 
@@ -84,6 +88,7 @@ class TicketService:
                     number=int(ticket.get("number") or 0),
                     opener_id=str(opener_id) if opener_id else "0",
                     opener_name=opener_name,
+                    opener_avatar=opener_avatar,
                     section=section_key,
                     section_label=section_meta.get("label"),
                     section_emoji=section_meta.get("emoji"),
@@ -104,7 +109,7 @@ class TicketService:
         results.sort(key=lambda t: t.number)
         return results
 
-    def get_ticket_detail(self, guild_id: str | int, channel_id: str | int) -> Optional[TicketDetailResponse]:
+    async def get_ticket_detail(self, guild_id: str | int, channel_id: str | int) -> Optional[TicketDetailResponse]:
         """Restituisce il dettaglio completo e sicuro di un ticket attivo."""
         gid_str = str(guild_id)
         cid_str = str(channel_id)
@@ -125,13 +130,21 @@ class TicketService:
         live_guild = _get_guild(int(gid_str)) if gid_str.isdigit() else None
         opener_id = ticket.get("opener")
         opener_name: Optional[str] = None
+        opener_avatar: Optional[str] = None
         if live_guild and opener_id:
             member = live_guild.get_member(int(opener_id))
             if member:
                 opener_name = member.display_name
+                opener_avatar = str(member.display_avatar.url)
 
         notes = [n for n in (ticket.get("notes") or []) if isinstance(n, dict)]
         added_members = [str(m) for m in (ticket.get("added_members") or [])]
+        messages: list[TicketMessageResponse] = []
+        try:
+            channel_messages = await get_channel_messages(gid_str, cid_str)
+        except (RuntimeError, ValueError):
+            channel_messages = []
+        messages = [TicketMessageResponse(**message) for message in channel_messages]
 
         return TicketDetailResponse(
             guild_id=gid_str,
@@ -139,6 +152,7 @@ class TicketService:
             number=int(ticket.get("number") or 0),
             opener_id=str(opener_id) if opener_id else "0",
             opener_name=opener_name,
+            opener_avatar=opener_avatar,
             section=section_key,
             section_label=section_meta.get("label"),
             section_emoji=section_meta.get("emoji"),
@@ -155,6 +169,8 @@ class TicketService:
             added_members=added_members,
             notes_count=len(notes),
             notes=notes,
+            messages=messages,
+            transcript_url=ticket.get("transcript_url"),
         )
 
     async def claim_ticket(
@@ -239,6 +255,25 @@ class TicketService:
             message=message,
         )
 
+    async def reply_to_ticket(
+        self,
+        guild_id: str | int,
+        channel_id: str | int,
+        user_id: int,
+        message: str,
+    ):
+        from tickets import reply_to_ticket
+
+        result = await reply_to_ticket(guild_id, channel_id, user_id, message)
+        if not result.get("success"):
+            code = result.get("status")
+            status_code = status.HTTP_403_FORBIDDEN if code == "forbidden" else status.HTTP_400_BAD_REQUEST
+            if code == "not_found":
+                status_code = status.HTTP_404_NOT_FOUND
+            raise HTTPException(status_code=status_code, detail=result.get("message", "Risposta non inviata."))
+        from manager_backend.models.schemas import TicketReplyResponse
+        return TicketReplyResponse(**result)
+
     async def close_ticket(
         self,
         guild_id: str | int,
@@ -250,28 +285,7 @@ class TicketService:
         gid_str = str(guild_id)
         cid_str = str(channel_id)
 
-        live_guild = _get_guild(int(gid_str)) if gid_str.isdigit() else None
-        live_channel = (
-            live_guild.get_channel(int(cid_str))
-            if (live_guild and isinstance(live_guild.get_channel(int(cid_str)), discord.TextChannel))
-            else None
-        )
-        live_member = (
-            await fetch_member(live_guild, user_id)
-            if live_guild
-            else None
-        )
-
-        closer_ref = live_member if live_member else user_id
-
-        res = await core_close_ticket(
-            live_guild,
-            live_channel,
-            closer_ref,
-            guild_id=gid_str,
-            channel_id=cid_str,
-            reason=reason,
-        )
+        res = await close_ticket_from_manager(gid_str, cid_str, user_id, reason)
 
         if not res.get("success"):
             err_status = res.get("status")
@@ -298,6 +312,8 @@ class TicketService:
             channel_id=str(res["channel_id"]),
             closed_by=str(res["closed_by"]),
             closed_at=int(res["closed_at"]),
+            close_reason=res.get("close_reason"),
+            transcript_url=res.get("transcript_url"),
             message=res.get("message", "Ticket chiuso con successo."),
         )
 

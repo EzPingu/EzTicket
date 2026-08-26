@@ -46,6 +46,7 @@ class GuildSummaryResponse(BaseModel):
     id: str
     name: Optional[str] = None
     icon: Optional[str] = None
+    member_count: Optional[int] = None
     role: str  # "GUILD_ADMIN" | "GUILD_STAFF"
     is_owner: bool = False
     is_admin: bool = False
@@ -67,12 +68,24 @@ class GuildDetailResponse(BaseModel):
 
 
 # --- Ticket Models ---
+class TicketMessageResponse(BaseModel):
+    id: str
+    author_id: str
+    author_name: str
+    author_avatar: Optional[str] = None
+    content: str = ""
+    created_at: int
+    attachments: list[str] = Field(default_factory=list)
+    is_staff: bool = False
+
+
 class TicketSummaryResponse(BaseModel):
     guild_id: str
     channel_id: str
     number: int
     opener_id: str
     opener_name: Optional[str] = None
+    opener_avatar: Optional[str] = None
     section: str
     section_label: Optional[str] = None
     section_emoji: Optional[str] = None
@@ -94,6 +107,7 @@ class TicketDetailResponse(BaseModel):
     number: int
     opener_id: str
     opener_name: Optional[str] = None
+    opener_avatar: Optional[str] = None
     section: str
     section_label: Optional[str] = None
     section_emoji: Optional[str] = None
@@ -110,6 +124,8 @@ class TicketDetailResponse(BaseModel):
     added_members: list[str] = Field(default_factory=list)
     notes_count: int = 0
     notes: list[dict[str, Any]] = Field(default_factory=list)
+    messages: list[TicketMessageResponse] = Field(default_factory=list)
+    transcript_url: Optional[str] = None
 
 
 class TicketClaimResponse(BaseModel):
@@ -131,7 +147,21 @@ class TicketCloseResponse(BaseModel):
     channel_id: str
     closed_by: str
     closed_at: int
+    close_reason: Optional[str] = None
+    transcript_url: Optional[str] = None
     message: str = "Ticket chiuso con successo"
+
+
+class TicketReplyRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+class TicketReplyResponse(BaseModel):
+    success: bool = True
+    guild_id: str
+    channel_id: str
+    message_id: str
+    message: str = "Messaggio inviato nel ticket"
 
 
 # --- Error Model ---
@@ -187,9 +217,30 @@ class ApplicationRejectResponse(BaseModel):
     summary_updated: bool = False
 
 
+class LatestMemberResponse(BaseModel):
+    id: str
+    username: str
+    global_name: Optional[str] = None
+    avatar: Optional[str] = None
+    joined_at: int
+
+
+class OnlineStaffMemberResponse(BaseModel):
+    id: str
+    username: str
+    avatar: Optional[str] = None
+    role: Optional[str] = None
+    roles: list[str] = Field(default_factory=list)
+    status: str
+
+
 # --- Dashboard Schemas ---
 class DashboardSummaryResponse(BaseModel):
     guild_id: str
+    server_member_count: Optional[int] = None
+    staff_member_count: Optional[int] = None
+    latest_member: Optional[LatestMemberResponse] = None
+    online_staff: list[OnlineStaffMemberResponse] = Field(default_factory=list)
     active_tickets: int
     closed_tickets_total: int
     pending_applications: int
@@ -216,14 +267,17 @@ class TicketHistoryItemResponse(BaseModel):
     motivo: Optional[str] = None
     opener_id: str
     opener_name: Optional[str] = None
+    opener_avatar: Optional[str] = None
     claimed_by: Optional[str] = None
     closed_by: Optional[str] = None
     closed_by_name: Optional[str] = None
+    closed_by_avatar: Optional[str] = None
     close_reason: Optional[str] = None
     opened_at: Optional[int] = None
     closed_at: Optional[int] = None
     duration_seconds: Optional[int] = None
     transcript_sent: bool = False
+    transcript_url: Optional[str] = None
     notes_count: int = 0
     channel_deleted: bool = False
 
@@ -231,6 +285,8 @@ class TicketHistoryItemResponse(BaseModel):
 class TicketHistoryDetailResponse(TicketHistoryItemResponse):
     added_members: list[str] = Field(default_factory=list)
     notes: list[dict[str, Any]] = Field(default_factory=list)
+    messages: list[TicketMessageResponse] = Field(default_factory=list)
+    transcript_url: Optional[str] = None
 
 
 class PaginatedTicketHistoryResponse(BaseModel):

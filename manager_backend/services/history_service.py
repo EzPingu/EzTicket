@@ -145,19 +145,26 @@ class HistoryService:
             cl_by_id = entry.get("closed_by")
             op_name: Optional[str] = None
             cl_name: Optional[str] = None
+            op_avatar: Optional[str] = None
+            cl_avatar: Optional[str] = None
 
             if live_guild:
                 if op_id:
                     m = live_guild.get_member(int(op_id))
                     if m:
                         op_name = m.display_name
+                        op_avatar = str(m.display_avatar.url)
                 if cl_by_id:
                     m = live_guild.get_member(int(cl_by_id))
                     if m:
                         cl_name = m.display_name
+                        cl_avatar = str(m.display_avatar.url)
 
             notes = entry.get("notes") or []
             notes_count = len(notes) if isinstance(notes, list) else 0
+            transcript_url = entry.get("transcript_url")
+            if not transcript_url and entry.get("transcript_sent") and gconf.get("transcript_channel"):
+                transcript_url = f"https://discord.com/channels/{gid_str}/{gconf['transcript_channel']}"
 
             items.append(
                 TicketHistoryItemResponse(
@@ -170,14 +177,17 @@ class HistoryService:
                     motivo=entry.get("motivo"),
                     opener_id=str(op_id) if op_id else "0",
                     opener_name=op_name,
+                    opener_avatar=op_avatar,
                     claimed_by=str(entry.get("claimed_by")) if entry.get("claimed_by") else None,
                     closed_by=str(cl_by_id) if cl_by_id else None,
                     closed_by_name=cl_name,
+                    closed_by_avatar=cl_avatar,
                     close_reason=entry.get("close_reason"),
                     opened_at=entry.get("opened_at"),
                     closed_at=entry.get("closed_at"),
                     duration_seconds=entry.get("duration_seconds"),
                     transcript_sent=bool(entry.get("transcript_sent", False)),
+                    transcript_url=transcript_url,
                     notes_count=notes_count,
                     channel_deleted=bool(entry.get("channel_deleted", False)),
                 )
@@ -233,20 +243,26 @@ class HistoryService:
         cl_by_id = found_entry.get("closed_by")
         op_name: Optional[str] = None
         cl_name: Optional[str] = None
+        op_avatar: Optional[str] = None
+        cl_avatar: Optional[str] = None
 
         if live_guild:
             if op_id:
                 m = live_guild.get_member(int(op_id))
                 if m:
                     op_name = m.display_name
+                    op_avatar = str(m.display_avatar.url)
             if cl_by_id:
                 m = live_guild.get_member(int(cl_by_id))
                 if m:
                     cl_name = m.display_name
+                    cl_avatar = str(m.display_avatar.url)
 
         notes = [n for n in (found_entry.get("notes") or []) if isinstance(n, dict)]
         added_members = [str(m) for m in (found_entry.get("added_members") or [])]
-
+        transcript_url = found_entry.get("transcript_url")
+        if not transcript_url and found_entry.get("transcript_sent") and gconf.get("transcript_channel"):
+            transcript_url = f"https://discord.com/channels/{gid_str}/{gconf['transcript_channel']}"
         return TicketHistoryDetailResponse(
             guild_id=gid_str,
             number=int(found_entry.get("number") or 0),
@@ -257,14 +273,17 @@ class HistoryService:
             motivo=found_entry.get("motivo"),
             opener_id=str(op_id) if op_id else "0",
             opener_name=op_name,
+            opener_avatar=op_avatar,
             claimed_by=str(found_entry.get("claimed_by")) if found_entry.get("claimed_by") else None,
             closed_by=str(cl_by_id) if cl_by_id else None,
             closed_by_name=cl_name,
+            closed_by_avatar=cl_avatar,
             close_reason=found_entry.get("close_reason"),
             opened_at=found_entry.get("opened_at"),
             closed_at=found_entry.get("closed_at"),
             duration_seconds=found_entry.get("duration_seconds"),
             transcript_sent=bool(found_entry.get("transcript_sent", False)),
+            transcript_url=transcript_url,
             notes_count=len(notes),
             channel_deleted=bool(found_entry.get("channel_deleted", False)),
             added_members=added_members,

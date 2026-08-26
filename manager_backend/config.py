@@ -9,6 +9,11 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Carica il file .env presente in manager_backend/.env
+load_dotenv(Path(__file__).parent / ".env")
+
 
 @dataclass
 class BackendConfig:
@@ -18,7 +23,10 @@ class BackendConfig:
     cors_origins: list[str] = field(
         default_factory=lambda: [
             origin.strip()
-            for origin in os.getenv("BACKEND_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,tauri://localhost").split(",")
+            for origin in os.getenv(
+                "BACKEND_CORS_ORIGINS",
+                "http://localhost:3000,http://127.0.0.1:3000,http://localhost:1420,tauri://localhost",
+            ).split(",")
             if origin.strip()
         ]
     )
@@ -36,7 +44,7 @@ class BackendConfig:
         or os.getenv("BACKEND_SECRET")
         or secrets.token_hex(32)
     )
-    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "86400"))  # 24 ore
+    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "86400"))
 
     # --- Security & Audit ---
     audit_log_path: Path = Path(os.getenv("AUDIT_LOG_PATH", "manager_audit.log"))
