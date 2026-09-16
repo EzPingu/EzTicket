@@ -15,6 +15,12 @@ class HealthResponse(BaseModel):
     timestamp: int
 
 
+class AppVersionResponse(BaseModel):
+    current_version: str
+    minimum_version: str
+    download_url: str
+
+
 # --- Auth & OAuth ---
 class OAuthExchangeRequest(BaseModel):
     code: str = Field(..., min_length=1, description="Authorization Code restituito da Discord")
@@ -148,6 +154,7 @@ class TicketCloseResponse(BaseModel):
     closed_by: str
     closed_at: int
     close_reason: Optional[str] = None
+    close_origin: Optional[str] = None
     transcript_url: Optional[str] = None
     message: str = "Ticket chiuso con successo"
 
@@ -187,11 +194,17 @@ class ApplicationSummaryResponse(BaseModel):
     notice_message_id: Optional[str] = None
     created_at: int
     status: str = "pending_review"
+    candidate_name: Optional[str] = None
+    candidate_avatar: Optional[str] = None
+    candidature_type: Optional[str] = None
+    staffer_name: Optional[str] = None
+    staffer_avatar: Optional[str] = None
 
 class ApplicationDetailResponse(ApplicationSummaryResponse):
     questions: list[str] = Field(default_factory=list)
     answers: list[str] = Field(default_factory=list)
     qa_available: bool = False
+    dm_messages: list[dict] = Field(default_factory=list)
 
 class ApplicationAcceptRequest(BaseModel):
     full_onboard: bool = True
@@ -215,6 +228,15 @@ class ApplicationRejectResponse(BaseModel):
     reason: Optional[str] = None
     dm_sent: bool = False
     summary_updated: bool = False
+
+class ApplicationDmRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+
+class ApplicationDmResponse(BaseModel):
+    success: bool
+    guild_id: str
+    user_id: str
+    dm_sent: bool = False
 
 
 class LatestMemberResponse(BaseModel):

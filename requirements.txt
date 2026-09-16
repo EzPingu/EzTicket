@@ -1,1 +1,5 @@
 discord.py>=2.4.0
+uvicorn
+fastapi
+httpx
+dotenv

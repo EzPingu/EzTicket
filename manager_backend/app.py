@@ -65,6 +65,22 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.exception_handler(ValueError)
+    async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+        if str(exc) == "bot_offline":
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "error": "BotOffline",
+                    "detail": "Il bot Discord non è attualmente online. Riprova tra poco.",
+                },
+            )
+        log.error("Errore di validazione non gestito su %s: %s", request.url.path, exc, exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "InternalServerError", "detail": "Si è verificato un errore interno del server."},
+        )
+
     return app
 
 

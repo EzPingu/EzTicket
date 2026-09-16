@@ -12,6 +12,8 @@ from manager_backend.models.schemas import (
     ApplicationAcceptResponse,
     ApplicationRejectRequest,
     ApplicationRejectResponse,
+    ApplicationDmRequest,
+    ApplicationDmResponse,
 )
 from manager_backend.security.dependencies import (
     get_client_ip,
@@ -31,7 +33,7 @@ async def list_applications(
     session: SessionData = Depends(get_current_session),
     access: GuildAccessInfo = Depends(require_guild_staff),
 ) -> list[ApplicationSummaryResponse]:
-    apps = application_service.list_applications(guild_id)
+    apps = await application_service.list_applications(guild_id)
     audit_logger.record(
         "APPLICATION_VIEW",
         user_id=session.user_id,
@@ -56,7 +58,7 @@ async def get_application_detail(
     detail = await application_service.get_application_detail(guild_id, user_id)
     if detail is None:
         audit_logger.record(
-            "ACCESS_DENIED",
+            "ACTION_FAILED",
             user_id=session.user_id,
             guild_id=guild_id,
             client_ip=client_ip,
@@ -96,7 +98,7 @@ async def accept_application(
         reason = str(e)
         status_code = status.HTTP_503_SERVICE_UNAVAILABLE if reason == "bot_offline" else (status.HTTP_422_UNPROCESSABLE_ENTITY if reason in ("member_not_found", "actor_not_found") else status.HTTP_404_NOT_FOUND)
         audit_logger.record(
-            "ACCESS_DENIED",
+            "ACTION_FAILED",
             user_id=session.user_id,
             guild_id=guild_id,
             client_ip=client_ip,
@@ -123,6 +125,45 @@ async def accept_application(
     return res
 
 
+@router.post("/{user_id}/dm", response_model=ApplicationDmResponse)
+async def send_application_dm(
+    guild_id: str,
+    user_id: str,
+    body: ApplicationDmRequest,
+    request: Request,
+    session: SessionData = Depends(get_current_session),
+    access: GuildAccessInfo = Depends(require_guild_staff),
+) -> ApplicationDmResponse:
+    try:
+        result = await application_service.send_dm(guild_id, user_id, session.user_id, body.message)
+    except ValueError as exc:
+        reason = str(exc)
+        code = (
+            status.HTTP_503_SERVICE_UNAVAILABLE if reason == "bot_offline"
+            else status.HTTP_404_NOT_FOUND if reason == "application_not_found"
+            else status.HTTP_409_CONFLICT if reason == "application_already_processed"
+            else status.HTTP_422_UNPROCESSABLE_ENTITY
+        )
+        audit_logger.record(
+            "ACTION_FAILED",
+            user_id=session.user_id,
+            guild_id=guild_id,
+            client_ip=get_client_ip(request),
+            details={"action": "APPLICATION_DM", "target_user_id": user_id, "reason": reason},
+            success=False,
+        )
+        raise HTTPException(status_code=code, detail=f"Errore: {reason}")
+    audit_logger.record(
+        "APPLICATION_DM",
+        user_id=session.user_id,
+        guild_id=guild_id,
+        client_ip=get_client_ip(request),
+        details={"target_user_id": user_id},
+        success=result.dm_sent,
+    )
+    return result
+
+
 @router.post("/{user_id}/reject", response_model=ApplicationRejectResponse)
 async def reject_application(
     guild_id: str,
@@ -140,7 +181,7 @@ async def reject_application(
         reason = str(e)
         status_code = status.HTTP_503_SERVICE_UNAVAILABLE if reason == "bot_offline" else (status.HTTP_422_UNPROCESSABLE_ENTITY if reason in ("member_not_found", "actor_not_found") else status.HTTP_404_NOT_FOUND)
         audit_logger.record(
-            "ACCESS_DENIED",
+            "ACTION_FAILED",
             user_id=session.user_id,
             guild_id=guild_id,
             client_ip=client_ip,

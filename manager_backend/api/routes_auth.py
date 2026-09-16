@@ -63,7 +63,7 @@ async def exchange_oauth_code(
         )
 
         audit_logger.record(
-            "AUTH_LOGIN_SUCCESS",
+            "LOGIN",
             user_id=user_id,
             client_ip=client_ip,
             success=True,
@@ -83,7 +83,7 @@ async def exchange_oauth_code(
 
     except DiscordOAuthError as exc:
         audit_logger.record(
-            "AUTH_LOGIN_FAILED",
+            "ACTION_FAILED",
             client_ip=client_ip,
             success=False,
             details={"reason": exc.message, "status": exc.status_code},
@@ -112,7 +112,7 @@ async def logout(
     revoked = session_store.revoke_session(session.session_token)
 
     audit_logger.record(
-        "AUTH_LOGOUT",
+        "LOGOUT",
         user_id=session.user_id,
         client_ip=client_ip,
         success=revoked,

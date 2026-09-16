@@ -57,17 +57,16 @@ from tickets import (
     schedule_claim_check,
     cancel_sla_check,
     cancel_claim_check,
+    ticket_section_autocomplete,
 )
 from candidature import (
     candidatura_group,
     domandestaff_group,
-    handle_staffaccettato,
-    handle_candidaturastaff,
     handle_candidaturestaffcanale,
-    handle_addettocandidature,
+    handle_sezionecandidature,
     handle_candidatura_dm_answer,
 )
-from settings import config_group, ezticket_group
+from settings import backup_group, config_group, ezticket_group
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 log = logging.getLogger("ticketbot")
@@ -138,6 +137,7 @@ class TicketBot(commands.AutoShardedBot):
         self.tree.add_command(candidatura_group)
         self.tree.add_command(domandestaff_group)
         self.tree.add_command(config_group)
+        self.tree.add_command(backup_group)
         self.tree.add_command(ezticket_group)
 
         # view persistenti: i bottoni/select continuano a funzionare dopo un riavvio
@@ -174,8 +174,8 @@ def start_manager_api():
 
     uvicorn.run(
         "manager_backend.app:app",
-        host="127.0.0.1",
-        port=8000,
+        host="0.0.0.0",
+        port=10180,
         reload=False,
     )
 
@@ -233,6 +233,7 @@ async def on_ready():
     if stale:
         log.info("Configurazione eliminata per %d server abbandonati.", len(stale))
 
+    await reconcile_persisted_tickets()
     restore_ticket_timers()
     await cfg.flush()
 
@@ -245,6 +246,7 @@ async def on_ready():
 async def update_presence():
     numero = len(bot.guilds)
     await bot.change_presence(
+        status=discord.Status.dnd,
         activity=discord.Activity(
             type=discord.ActivityType.watching,
             name=f"🎫 i ticket di {numero} server" if numero != 1 else "🎫 i ticket del server",
@@ -337,6 +339,34 @@ def restore_ticket_timers(only_guild: discord.Guild | None = None) -> int:
     if restored:
         log.info("Ripristinati %d timer (SLA/anti-abbandono).", restored)
     return restored
+
+
+async def reconcile_persisted_tickets() -> int:
+    """Verifica i ticket persistiti dopo il boot e archivia quelli eliminati."""
+    invalidated = 0
+    for guild in bot.guilds:
+        gconf = cfg.peek(guild.id)
+        if not gconf:
+            continue
+        for channel_id_str, ticket in list(gconf.get("tickets", {}).items()):
+            if ticket.get("status") != "open" or not str(channel_id_str).isdigit():
+                continue
+            channel = guild.get_channel(int(channel_id_str))
+            if channel is not None:
+                continue
+            try:
+                await guild.fetch_channel(int(channel_id_str))
+            except discord.NotFound:
+                if forget_deleted_ticket(guild.id, int(channel_id_str)):
+                    invalidated += 1
+            except (discord.Forbidden, discord.HTTPException):
+                # Un errore temporaneo o di permessi non dimostra che il canale
+                # sia stato eliminato: il ticket resta persistito.
+                continue
+    if invalidated:
+        await cfg.flush()
+        log.info("Invalidati %d ticket persistiti con canale non più esistente.", invalidated)
+    return invalidated
 
 
 def build_setup_embed(guild: discord.Guild) -> discord.Embed:
@@ -494,10 +524,9 @@ async def on_message(message: discord.Message):
     """Gestisce due cose:
     1) nei DM: le risposte a un questionario di candidatura staff in corso
     2) nei canali ticket: tracking risposte per SLA/anti-abbandono."""
-    if message.author.bot or message.webhook_id:
-        return
-
     if message.guild is None:
+        if message.author.bot or message.webhook_id:
+            return
         # Messaggio diretto (DM): può essere una risposta al questionario staff
         await handle_candidatura_dm_answer(bot, message)
         return
@@ -509,6 +538,13 @@ async def on_message(message: discord.Message):
         return
     ticket = gconf.get("tickets", {}).get(str(message.channel.id))
     if not ticket or ticket.get("status") != "open":
+        return
+
+    from tickets import serialize_ticket_message
+    from manager_backend.services.ticket_realtime import ticket_realtime
+    ticket_realtime.publish(message.guild.id, message.channel.id, serialize_ticket_message(message, message.guild.id))
+
+    if message.author.bot or message.webhook_id:
         return
 
     is_staff_here = is_staff_member(message.author, message.guild.id)
@@ -538,13 +574,6 @@ async def risponditicket(interaction: discord.Interaction, utente: discord.Membe
     await handle_risponditicket(interaction, utente)
 
 
-@bot.tree.command(name="staffaccettato", description="Accetta un candidato nello staff: ruoli, nickname e DM di benvenuto")
-@app_commands.describe(utente="Utente accettato nello staff")
-@app_commands.guild_only()
-async def staffaccettato(interaction: discord.Interaction, utente: discord.Member):
-    await handle_staffaccettato(interaction, utente)
-
-
 @bot.tree.command(name="setlogticketstaff", description="[Admin server] Imposta il canale di log del sistema ticket")
 @app_commands.describe(canale="Canale in cui loggare gli eventi del sistema ticket")
 @app_commands.guild_only()
@@ -559,13 +588,6 @@ async def slachannel(interaction: discord.Interaction, canale: discord.TextChann
     await handle_slachannel(interaction, canale)
 
 
-@bot.tree.command(name="candidaturastaff", description="Avvia in DM il questionario di candidatura staff per un utente")
-@app_commands.describe(utente="Utente a cui inviare il questionario")
-@app_commands.guild_only()
-async def candidaturastaff(interaction: discord.Interaction, utente: discord.Member):
-    await handle_candidaturastaff(interaction, utente)
-
-
 @bot.tree.command(name="candidaturestaffcanale", description="[Admin server] Canale dove arrivano le candidature staff completate")
 @app_commands.describe(canale="Canale di destinazione delle candidature")
 @app_commands.guild_only()
@@ -573,11 +595,12 @@ async def candidaturestaffcanale(interaction: discord.Interaction, canale: disco
     await handle_candidaturestaffcanale(interaction, canale)
 
 
-@bot.tree.command(name="addettocandidature", description="[Admin server] Ruolo taggato per ogni nuova candidatura staff")
-@app_commands.describe(ruolo="Ruolo da taggare per le nuove candidature")
+@bot.tree.command(name="sezionecandidature", description="[Admin server] Configura il ruolo menzionato per una candidatura")
+@app_commands.describe(sezione="Sezione candidatura già esistente", ruolo="Ruolo da menzionare")
+@app_commands.autocomplete(sezione=ticket_section_autocomplete)
 @app_commands.guild_only()
-async def addettocandidature(interaction: discord.Interaction, ruolo: discord.Role):
-    await handle_addettocandidature(interaction, ruolo)
+async def sezionecandidature(interaction: discord.Interaction, sezione: str, ruolo: discord.Role):
+    await handle_sezionecandidature(interaction, sezione, ruolo)
 
 
 @bot.tree.command(name="help", description="Mostra tutti i comandi disponibili")
@@ -623,8 +646,6 @@ async def help_command(interaction: discord.Interaction):
             f"`/config sla <minuti>` — attesa prima dell'avviso SLA (ora: **{sla_min} min**)\n"
             f"`/config claimtimeout <minuti>` — anti-abbandono claim (ora: **{claim_min} min**)\n"
             f"`/config inattivita <ore>` — ore citate dal promemoria (ora: **{ore} h**)\n"
-            "`/config ruoliaccettato` — ruoli assegnati da `/staffaccettato`\n"
-            "`/config nickname` — formato del nickname dei nuovi staffer\n"
             "`/config branding` — testo del footer di transcript ed embed\n"
             "`/config team add|remove|lista` — team proposti dalle candidature\n"
             "`/config owner add|remove|lista` — chi può configurare il bot qui"
@@ -648,8 +669,9 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="📋 Candidature (staff)",
         value=(
-            "`/candidatura attesa|accettata|rifiutata` — esito di una candidatura\n"
-            "`/staffaccettato` — accetta un candidato nello staff (ruoli + nickname + DM)"
+            "`/candidatura aggiungi` — crea un tipo di candidatura\n"
+            "`/candidatura settings` — configura ruolo e nickname del tipo\n"
+            "`/candidatura accettata|rifiutata` — gestisce l'esito della candidatura"
         ),
         inline=False,
     )
@@ -658,8 +680,8 @@ async def help_command(interaction: discord.Interaction):
         value=(
             "`/domandestaff modifica|rimuovi|lista` — domande del questionario\n"
             "`/candidaturestaffcanale <canale>` — canale dove arrivano le candidature\n"
-            "`/addettocandidature <ruolo>` — ruolo taggato per ogni nuova candidatura\n"
-            "`/candidaturastaff <utente>` — avvia il questionario in DM per l'utente"
+            "`/sezionecandidature <sezione> <ruolo>` — ruolo menzionato per una sezione candidatura\n"
+            "`/candidatura invia <utente> [ruolo]` — avvia il questionario in DM per l'utente"
         ),
         inline=False,
     )

@@ -14,6 +14,7 @@ from manager_backend.models.schemas import (
     PaginatedTicketHistoryResponse,
     TicketHistoryDetailResponse,
     TicketHistoryItemResponse,
+    TicketMessageResponse,
 )
 from tickets import _get_guild
 
@@ -183,6 +184,7 @@ class HistoryService:
                     closed_by_name=cl_name,
                     closed_by_avatar=cl_avatar,
                     close_reason=entry.get("close_reason"),
+                    close_origin=entry.get("close_origin"),
                     opened_at=entry.get("opened_at"),
                     closed_at=entry.get("closed_at"),
                     duration_seconds=entry.get("duration_seconds"),
@@ -279,6 +281,7 @@ class HistoryService:
             closed_by_name=cl_name,
             closed_by_avatar=cl_avatar,
             close_reason=found_entry.get("close_reason"),
+            close_origin=found_entry.get("close_origin"),
             opened_at=found_entry.get("opened_at"),
             closed_at=found_entry.get("closed_at"),
             duration_seconds=found_entry.get("duration_seconds"),
@@ -288,6 +291,7 @@ class HistoryService:
             channel_deleted=bool(found_entry.get("channel_deleted", False)),
             added_members=added_members,
             notes=notes,
+            messages=[TicketMessageResponse(**message) for message in found_entry.get("messages", []) if isinstance(message, dict)],
         )
 
 

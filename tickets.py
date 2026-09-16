@@ -15,7 +15,6 @@ import io
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Awaitable, TypeVar
 
 import discord
 from discord import app_commands
@@ -35,6 +34,21 @@ from config import (
     require_staff,
     sla_seconds,
 )
+from discord_bridge import bind_client, get_guild, run_on_discord_loop
+
+
+async def ticket_section_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Restituisce esclusivamente le sezioni ticket della guild corrente."""
+    if interaction.guild is None:
+        return []
+    query = (current or "").casefold()
+    return [
+        app_commands.Choice(name=str(section.get("label", key))[:100], value=key)
+        for key, section in cfg.guild(interaction.guild.id).get("sections", {}).items()
+        if query in str(section.get("label", key)).casefold()
+    ][:25]
 
 log = logging.getLogger("ticketbot.tickets")
 
@@ -70,39 +84,8 @@ SLA_RETRY_SECONDS = 60
 # non tengono in vita oggetti obsoleti e continuano a funzionare correttamente
 # dopo una riconnessione o su un altro shard.
 # ---------------------------------------------------------------------------
-_client: discord.Client | None = None
-_client_loop: asyncio.AbstractEventLoop | None = None
-_T = TypeVar("_T")
-
-
-def bind_client(client: discord.Client) -> None:
-    global _client, _client_loop
-    _client = client
-    try:
-        _client_loop = asyncio.get_running_loop()
-    except RuntimeError:
-        _client_loop = None
-
-
 def _get_guild(guild_id: int) -> discord.Guild | None:
-    return _client.get_guild(int(guild_id)) if _client else None
-
-
-async def run_on_discord_loop(coro: Awaitable[_T]) -> _T:
-    """Esegue una coroutine sul loop gateway del bot, anche da FastAPI."""
-    if _client_loop is None:
-        return await coro
-    if not _client_loop.is_running():
-        raise RuntimeError("Il loop Discord non è disponibile.")
-    current_loop = asyncio.get_running_loop()
-    if current_loop is _client_loop:
-        return await coro
-    future = asyncio.run_coroutine_threadsafe(coro, _client_loop)
-    try:
-        return await asyncio.wrap_future(future)
-    except asyncio.CancelledError:
-        future.cancel()
-        raise
+    return get_guild(guild_id)
 
 
 async def _get_channel_messages(guild_id: int, channel_id: int) -> list[dict]:
@@ -115,19 +98,23 @@ async def _get_channel_messages(guild_id: int, channel_id: int) -> list[dict]:
     except (discord.Forbidden, discord.HTTPException):
         return []
     return [
-        {
-            "id": str(message.id),
-            "author_id": str(message.author.id),
-            "author_name": message.author.display_name,
-            "author_avatar": str(message.author.display_avatar.url),
-            "content": message.content or "",
-            "created_at": int(message.created_at.timestamp()),
-            "attachments": [attachment.url for attachment in message.attachments],
-            "is_staff": is_staff_member(message.author, guild_id),
-        }
+        serialize_ticket_message(message, guild_id)
         for message in messages
         if message.content or message.attachments or message.embeds
     ]
+
+
+def serialize_ticket_message(message: discord.Message, guild_id: int | str) -> dict:
+    return {
+        "id": str(message.id),
+        "author_id": str(message.author.id),
+        "author_name": message.author.display_name,
+        "author_avatar": str(message.author.display_avatar.url),
+        "content": message.content or "",
+        "created_at": int(message.created_at.timestamp()),
+        "attachments": [attachment.url for attachment in message.attachments],
+        "is_staff": is_staff_member(message.author, int(guild_id)),
+    }
 
 
 async def get_channel_messages(guild_id: int | str, channel_id: int | str) -> list[dict]:
@@ -151,6 +138,7 @@ async def _close_ticket_from_manager(
         guild_id=guild_id,
         channel_id=channel_id,
         reason=reason,
+        close_origin="manager",
     )
 
 
@@ -459,6 +447,8 @@ async def _send_ticket_reply(
         ticket["claimer_responded"] = True
         cancel_claim_check(guild_id, channel_id)
     cfg.save()
+    from manager_backend.services.ticket_realtime import ticket_realtime
+    ticket_realtime.publish(guild_id, channel_id, serialize_ticket_message(sent, guild_id))
     return {
         "success": True,
         "guild_id": str(guild_id),
@@ -1344,6 +1334,8 @@ async def create_ticket_channel(
 
     staff_role_id = section.get("staff_role_id") or gconf.get("staff_role")
     role = guild.get_role(staff_role_id) if staff_role_id else None
+    mention_role_id = section.get("candidature_mention_role_id")
+    mention_role = guild.get_role(mention_role_id) if mention_role_id else None
     if role:
         overwrites[role] = discord.PermissionOverwrite(
             view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
@@ -1382,6 +1374,9 @@ async def create_ticket_channel(
     sla = sla_seconds(guild.id)
     ticket = {
         "opener": opener.id,
+        "guild_id": guild.id,
+        "channel_id": channel.id,
+        "ticket_id": number,
         "section": section_key,
         "motivo": motivo,
         "claimed_by": None,
@@ -1413,8 +1408,12 @@ async def create_ticket_channel(
 
     # messaggio 2: pannello riservato allo staff, con i pulsanti di gestione
     staff_embed = build_staff_panel_embed(guild, section, ticket)
+    mentions = []
+    for configured_role in (role, mention_role):
+        if configured_role and configured_role.mention not in mentions:
+            mentions.append(configured_role.mention)
     staff_msg = await channel.send(
-        content=role.mention if role else None,
+        content=" ".join(mentions) or None,
         embed=staff_embed,
         view=TicketControlView(),
         allowed_mentions=discord.AllowedMentions(roles=True),
@@ -1438,6 +1437,7 @@ async def close_ticket(
     guild_id: int | str | None = None,
     channel_id: int | str | None = None,
     reason: str | None = None,
+    close_origin: str = "discord",
 ) -> dict:
     """Chiude il ticket garantendo transizione atomica OPEN -> CLOSING -> CLOSED.
 
@@ -1488,6 +1488,17 @@ async def close_ticket(
 
         transcript_sent = False
         channel_name = channel.name if (channel and hasattr(channel, "name")) else str(cid)
+        history_messages: list[dict] = []
+        if channel and isinstance(channel, discord.TextChannel):
+            try:
+                messages = [m async for m in channel.history(limit=None, oldest_first=True)]
+                history_messages = [
+                    serialize_ticket_message(message, gid)
+                    for message in messages
+                    if message.content or message.attachments or message.embeds
+                ]
+            except (discord.Forbidden, discord.HTTPException):
+                history_messages = []
 
         # 4. Transcript sicuro con gestione eccezioni (non blocca la chiusura)
         if guild and channel and (isinstance(channel, discord.TextChannel) or hasattr(channel, "send")):
@@ -1498,6 +1509,9 @@ async def close_ticket(
 
         # 5. Archiviazione nello storico
         history_entry = {
+            "guild_id": gid,
+            "channel_id": cid,
+            "ticket_id": ticket.get("number"),
             "number": ticket.get("number"),
             "channel_name": channel_name,
             "section": ticket.get("section"),
@@ -1508,11 +1522,13 @@ async def close_ticket(
             "notes": ticket.get("notes", []),
             "closed_by": closer_id,
             "close_reason": reason,
+            "close_origin": close_origin,
             "opened_at": opened_at,
             "closed_at": closed_at,
             "duration_seconds": duration,
             "transcript_sent": transcript_sent,
             "transcript_url": ticket.get("transcript_url"),
+            "messages": history_messages,
             "rating": None,
         }
         cfg.add_history_entry(gid, history_entry)
@@ -1573,6 +1589,9 @@ def forget_deleted_ticket(guild_id: int, channel_id: int, channel_name: str = ""
     closed_at = int(datetime.now(timezone.utc).timestamp())
     opened_at = ticket.get("opened_at")
     cfg.add_history_entry(guild_id, {
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "ticket_id": ticket.get("number"),
         "number": ticket.get("number"),
         "channel_name": channel_name or str(channel_id),
         "section": ticket.get("section"),

@@ -7,9 +7,12 @@ from __future__ import annotations
 import json
 import logging
 import time
+import asyncio
 from dataclasses import asdict, dataclass, field
 from typing import Any
+import httpx
 
+from manager_backend.config import backend_cfg
 from manager_backend.security.crypto import hash_identifier
 
 log = logging.getLogger("ezticket.manager.audit")
@@ -49,7 +52,7 @@ class AuditLogger:
         clean_user_id = int(user_id) if user_id is not None and str(user_id).isdigit() else None
         clean_guild_id = str(guild_id) if guild_id is not None else None
         ip_hash = hash_identifier(client_ip) if client_ip else None
-        safe_details = {k: v for k, v in (details or {}).items() if not k.lower().endswith(("token", "secret", "password", "key"))}
+        safe_details = self._sanitize(details or {})
 
         event = AuditEvent(
             event_type=event_type,
@@ -75,7 +78,59 @@ class AuditLogger:
             event.ip_hash,
             json.dumps(event.details),
         )
+        self._dispatch_webhook(event)
         return event
+
+    @classmethod
+    def _sanitize(cls, value: Any, key: str = "") -> Any:
+        blocked = ("token", "secret", "password", "cookie", "webhook", "authorization")
+        if any(part in key.lower() for part in blocked):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {str(k): cls._sanitize(v, str(k)) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._sanitize(item, key) for item in value]
+        return value
+
+    @staticmethod
+    async def _post_webhook(event: AuditEvent) -> None:
+        if not backend_cfg.audit_webhook_url:
+            return
+        color = 0x57D39B if event.success else 0xED6A5A
+        title = "✅ " + event.event_type if event.success else "❌ Azione fallita"
+        fields = [
+            {"name": "Azione", "value": f"`{event.event_type}`", "inline": True},
+            {"name": "Discord ID", "value": f"`{event.user_id or 'n/d'}`", "inline": True},
+            {"name": "Guild", "value": f"`{event.guild_id or 'n/d'}`", "inline": True},
+            {"name": "Ora", "value": f"<t:{event.timestamp}:F>", "inline": False},
+        ]
+        for key in ("ticket_id", "channel_id", "ticket_number", "application_id", "target_user_id"):
+            if key in event.details:
+                fields.append({"name": key.replace("_", " ").title(), "value": f"`{event.details[key]}`", "inline": True})
+        if event.details:
+            details = json.dumps(event.details, ensure_ascii=True)
+            fields.append({"name": "Dettagli", "value": f"```json\n{details[:900]}\n```", "inline": False})
+        payload = {
+            "embeds": [{
+                "title": title[:256],
+                "color": color,
+                "fields": fields,
+                "footer": {"text": "EzTicket Manager Audit"},
+            }]
+        }
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.post(backend_cfg.audit_webhook_url, json=payload)
+                response.raise_for_status()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.warning("Invio audit webhook fallito: %s", exc)
+
+    def _dispatch_webhook(self, event: AuditEvent) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._post_webhook(event))
 
     def get_events(
         self,

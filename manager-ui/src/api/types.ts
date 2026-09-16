@@ -123,6 +123,7 @@ export type TicketCloseResponse = {
   closed_by: string;
   closed_at: number;
   close_reason: string | null;
+  close_origin?: string | null;
   transcript_url: string | null;
   message: string;
 };
@@ -161,4 +162,26 @@ export type TicketHistoryDetail = TicketHistoryItem & {
   messages: TicketMessage[];
   transcript_url: string | null;
   created_at?: number;
+};
+
+export type ApplicationSummary = {
+  guild_id: string;
+  user_id: string;
+  channel_id: string;
+  message_id: string;
+  notice_message_id: string | null;
+  created_at: number;
+  status: string;
+  candidate_name: string | null;
+  candidate_avatar: string | null;
+  candidature_type: string | null;
+  staffer_name: string | null;
+  staffer_avatar: string | null;
+};
+
+export type ApplicationDetail = ApplicationSummary & {
+  questions: string[];
+  answers: string[];
+  qa_available: boolean;
+  dm_messages: { direction: "staff" | "user"; author_name?: string; author_avatar?: string; content: string; created_at: number }[];
 };

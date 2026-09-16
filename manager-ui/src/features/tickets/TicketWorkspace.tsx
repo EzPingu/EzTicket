@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { ApiError } from "../../api/client";
 import { getTicketHistory, getTicketHistoryDetail } from "../../api/history.api";
-import { closeTicket, getActiveTicketDetail, getActiveTickets, replyToTicket } from "../../api/tickets.api";
+import { closeTicket, getActiveTicketDetail, getActiveTickets, replyToTicket, streamTicketMessages } from "../../api/tickets.api";
 import type { TicketDetail, TicketHistoryDetail, TicketHistoryItem, TicketSummary } from "../../api/types";
 
 type Props = { token: string; guildId: string; isRefreshing: boolean; onUnauthorized: () => void };
@@ -112,6 +112,8 @@ export function TicketWorkspace({ token, guildId, isRefreshing, onUnauthorized }
   useEffect(() => {
     if (!selected || selected.kind !== "open") return;
     const channelId = selected.ticket.channel_id;
+    const controller = new AbortController();
+    let realtimeAvailable = true;
     const refreshMessages = async () => {
       try {
         const detail = await getActiveTicketDetail(token, guildId, channelId);
@@ -124,8 +126,27 @@ export function TicketWorkspace({ token, guildId, isRefreshing, onUnauthorized }
         handleError(cause);
       }
     };
-    const intervalId = window.setInterval(() => void refreshMessages(), 3000);
-    return () => window.clearInterval(intervalId);
+    void streamTicketMessages(token, guildId, channelId, controller.signal, (message) => {
+      setSelected((current) => {
+        if (current?.kind !== "open" || current.ticket.channel_id !== channelId) return current;
+        const messages = current.ticket.messages ?? [];
+        if (messages.some((item) => item.id === message.id)) return current;
+        return {
+          kind: "open",
+          ticket: { ...current.ticket, messages: [...messages, message].sort((a, b) => a.created_at - b.created_at) },
+        };
+      });
+    }).catch(() => {
+      realtimeAvailable = false;
+      void refreshMessages();
+    });
+    const fallbackIntervalId = window.setInterval(() => {
+      if (!realtimeAvailable) void refreshMessages();
+    }, 5000);
+    return () => {
+      controller.abort();
+      window.clearInterval(fallbackIntervalId);
+    };
   }, [selected?.kind, selected?.kind === "open" ? selected.ticket.channel_id : null, token, guildId]);
 
   if (selected) {

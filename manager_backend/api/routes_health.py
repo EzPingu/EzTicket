@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 from fastapi import APIRouter
+from manager_backend.config import backend_cfg
 from manager_backend.models.schemas import HealthResponse
 
 router = APIRouter(tags=["Health"])
@@ -16,6 +17,6 @@ async def health_check() -> HealthResponse:
     """Restituisce lo stato operativo del backend e il timestamp corrente."""
     return HealthResponse(
         status="ok",
-        version="0.1.0",
+        version=backend_cfg.manager_current_version,
         timestamp=int(time.time()),
     )

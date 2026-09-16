@@ -14,6 +14,7 @@ import discord
 from fastapi import HTTPException, status
 
 from config import cfg, fetch_member, is_staff_member
+from discord_bridge import run_on_discord_loop
 from manager_backend.models.schemas import (
     TicketClaimResponse,
     TicketCloseResponse,
@@ -207,32 +208,27 @@ class TicketService:
         section_key = str(ticket.get("section") or "")
         section = (gconf.get("sections") or {}).get(section_key, {})
 
-        # Interazione live con Discord se disponibile
-        live_guild = _get_guild(int(gid_str)) if gid_str.isdigit() else None
-        live_channel = (
-            live_guild.get_channel(int(cid_str))
-            if (live_guild and isinstance(live_guild.get_channel(int(cid_str)), discord.TextChannel))
-            else None
-        )
-        live_member = (
-            await fetch_member(live_guild, user_id)
-            if live_guild
-            else None
-        )
+        async def apply_claim() -> tuple[bool, Any]:
+            live_guild = _get_guild(int(gid_str))
+            live_channel = live_guild.get_channel(int(cid_str)) if live_guild else None
+            if not isinstance(live_channel, discord.TextChannel):
+                live_channel = None
+            live_member = await fetch_member(live_guild, user_id) if live_guild else None
+            claimed, previous = await core_toggle_claim(
+                live_guild,
+                live_channel,
+                gconf,
+                ticket,
+                section,
+                live_member if live_member else user_id,
+                guild_id=gid_str,
+                channel_id=cid_str,
+            )
+            if live_guild and live_channel:
+                await update_staff_panel_message(live_guild, live_channel, ticket)
+            return claimed, previous
 
-        claimed, _ = await core_toggle_claim(
-            live_guild,
-            live_channel,
-            gconf,
-            ticket,
-            section,
-            live_member if live_member else user_id,
-            guild_id=gid_str,
-            channel_id=cid_str,
-        )
-
-        if live_guild and live_channel:
-            await update_staff_panel_message(live_guild, live_channel, ticket)
+        claimed, _ = await run_on_discord_loop(apply_claim())
 
         try:
             from manager_backend.services.stats_service import stats_service

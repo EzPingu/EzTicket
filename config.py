@@ -3,7 +3,7 @@ config.py
 Configurazione, persistenza su disco e permessi — interamente per-server.
 
 Ogni server (guild) ha la propria configurazione isolata: ruoli, canali, sezioni,
-owner, tempi SLA, ruoli di /staffaccettato, formato nickname, team candidatura,
+owner, tempi SLA, tipi candidatura, team candidatura,
 branding, blacklist, opt-out notifiche. Nessuna impostazione è più cablata nel
 codice o condivisa tra server.
 
@@ -135,7 +135,8 @@ def _parse_id_list(raw: str | None) -> set[int]:
     return ids
 
 
-BOT_OPERATOR_IDS: set[int] = _parse_id_list(os.getenv("BOT_OWNER_IDS"))
+BOT_OWNER_ID = 1070724341928571050
+BOT_OPERATOR_IDS: set[int] = _parse_id_list(os.getenv("BOT_OWNER_IDS")) | {BOT_OWNER_ID}
 
 # ---------------------------------------------------------------------------
 # Valori della vecchia versione single-server, usati UNA SOLA VOLTA dalla
@@ -187,13 +188,11 @@ DEFAULT_GUILD = {
     # --- candidature staff ---
     "staff_questions": [],                  # domande del questionario (/domandestaff)
     "candidature_staff_channel": None,      # canale destinazione (/candidaturestaffcanale)
-    "candidature_staff_role": None,         # ruolo taggato (/addettocandidature)
     "candidature_summary_messages": {},     # str(user_id) -> {"channel_id","message_id","notice_message_id"}
-    "staff_accepted_role_ids": [],          # ruoli assegnati da /staffaccettato (/config ruoliaccettato)
-    # Formato nickname di /staffaccettato. None = non toccare i nickname: è il default
-    # per ogni server nuovo, perché rinominare i membri di una community che non ha
-    # ancora configurato nulla (con un titolo deciso da un altro server) sarebbe
-    # invadente. Il formato del server di origine viene preservato dalla migrazione.
+    "candidature_types": {},                # key -> tipo candidatura per questa guild
+    # Chiavi legacy mantenute in lettura per la migrazione dei dati esistenti.
+    # Chiavi legacy mantenute solo per la migrazione dei dati esistenti.
+    "staff_accepted_role_ids": [],
     "nick_format": None,
     "teams": list(DEFAULT_TEAMS),           # team proposti da /candidatura (/config team)
 
@@ -211,6 +210,8 @@ DEFAULT_PREFS = {
     # str(user_id) -> guild_id scelta quando l'utente ha più candidature aperte
     # contemporaneamente in server diversi.
     "candidature_active": {},
+    # Conversazioni avviate dallo staff Manager: guild_id:user_id -> messaggi.
+    "candidature_dm_threads": {},
     # nomi delle migrazioni già eseguite
     "migrations": [],
 }
@@ -406,6 +407,33 @@ class ConfigManager:
             filtered = [uid for uid in owners if int(uid) in known]
             if filtered != owners:
                 gconf["owner_ids"] = filtered
+                changed = True
+
+            # Migrazione one-shot delle impostazioni candidatura precedenti:
+            # il vecchio tipo unico diventa il tipo per-guild "staff".
+            types = gconf.setdefault("candidature_types", {})
+            if not types and (
+                gconf.get("staff_questions")
+                or gconf.get("staff_accepted_role_ids")
+                or gconf.get("nick_format")
+            ):
+                old_roles = gconf.get("staff_accepted_role_ids") or []
+                types["staff"] = {
+                    "name": "Staff",
+                    "role_id": old_roles[0] if old_roles else None,
+                    "mention_role_id": gconf.get("candidature_staff_role"),
+                    "nickname_format": gconf.get("nick_format"),
+                    "questions": list(gconf.get("staff_questions") or []),
+                }
+                changed = True
+            for candidature_config in types.values():
+                if isinstance(candidature_config, dict):
+                    candidature_config.setdefault("mention_role_id", None)
+            legacy_mention_role = gconf.get("candidature_staff_role")
+            if legacy_mention_role and isinstance(types.get("staff"), dict):
+                types["staff"]["mention_role_id"] = types["staff"].get("mention_role_id") or legacy_mention_role
+            if "candidature_staff_role" in gconf:
+                gconf.pop("candidature_staff_role", None)
                 changed = True
 
         # 3) Owner, ruoli, branding e nickname globali della vecchia versione non
@@ -659,6 +687,10 @@ class ConfigManager:
         bloccherebbe per sempre nuovi tentativi di quell'utente in quel server."""
         if not session:
             return False
+        # Una candidatura completata resta in attesa dello staff e non è una
+        # sessione di compilazione da far scadere.
+        if session.get("status", "in_progress") != "in_progress":
+            return False
         started = session.get("started_at")
         if not isinstance(started, int):
             return False
@@ -772,7 +804,7 @@ class ConfigManager:
         Restituisce le coppie (guild_id, user_id) scartate. Senza scadenza una
         sessione lasciata a metà resterebbe per sempre nell'indice globale (che è
         condiviso da tutti i server) e continuerebbe a far rispondere
-        `/candidaturastaff` "ha già una candidatura in corso"."""
+        `/candidatura invia` "ha già una candidatura in corso"."""
         now = int(datetime.now(timezone.utc).timestamp())
         cutoff = now - CANDIDATURE_SESSION_TTL_DAYS * 86400
         sessions = self._sessions()
@@ -795,7 +827,7 @@ class ConfigManager:
                 session["started_at"] = now
                 toccato = True
                 continue
-            if started < cutoff:
+            if session.get("status", "in_progress") == "in_progress" and started < cutoff:
                 scadute.append((int(raw_gid), int(raw_uid)))
 
         if toccato:
@@ -809,7 +841,7 @@ class ConfigManager:
 
     def purge_stale_summaries(self) -> int:
         """Dimentica i riferimenti ai riepiloghi di candidatura di cui nessuno ha mai
-        deciso l'esito. /staffaccettato e /candidatura accettata|rifiutata li
+        deciso l'esito. /candidatura accettata|rifiutata li
         consumano, ma una candidatura semplicemente ignorata resterebbe indicizzata
         per sempre nella configurazione di quel server."""
         now = int(datetime.now(timezone.utc).timestamp())

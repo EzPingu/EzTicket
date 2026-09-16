@@ -1,5 +1,6 @@
 # Segreti: MAI committare né condividere questo file
 .env
+.tauri/
 
 # Dati del bot (configurazione e ticket di ogni server)
 config_ticket.json
@@ -16,3 +17,5 @@ venv/
 # Configurazioni locali Claude
 .claude/
 .aider*
+
+manager-ui/.env.production

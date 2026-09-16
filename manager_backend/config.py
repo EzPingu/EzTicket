@@ -25,7 +25,12 @@ class BackendConfig:
             origin.strip()
             for origin in os.getenv(
                 "BACKEND_CORS_ORIGINS",
-                "http://localhost:3000,http://127.0.0.1:3000,http://localhost:1420,tauri://localhost",
+                (
+                    "http://localhost:3000,http://127.0.0.1:3000,"
+                    "http://localhost:1420,http://127.0.0.1:1420,"
+                    "http://localhost:5173,http://127.0.0.1:5173,"
+                    "tauri://localhost,http://tauri.localhost,https://tauri.localhost"
+                ),
             ).split(",")
             if origin.strip()
         ]
@@ -48,6 +53,12 @@ class BackendConfig:
 
     # --- Security & Audit ---
     audit_log_path: Path = Path(os.getenv("AUDIT_LOG_PATH", "manager_audit.log"))
+    audit_webhook_url: str = os.getenv("AUDIT_WEBHOOK_URL", "").strip()
+
+    # --- Manager update policy ---
+    manager_current_version: str = os.getenv("MANAGER_CURRENT_VERSION", "0.1.0").strip()
+    manager_minimum_version: str = os.getenv("MANAGER_MINIMUM_VERSION", "0.1.0").strip()
+    manager_download_url: str = os.getenv("MANAGER_DOWNLOAD_URL", "").strip()
 
     @property
     def is_oauth_configured(self) -> bool:

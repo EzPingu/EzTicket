@@ -12,6 +12,7 @@ from manager_backend.audit import audit_logger
 from manager_backend.auth.session import SessionData, session_store
 from manager_backend.models.schemas import UserProfileResponse
 from manager_backend.services.guild_service import GuildAccessInfo, guild_service
+from manager_backend.services.version_service import is_supported
 
 
 def get_client_ip(request: Request) -> str:
@@ -24,9 +25,23 @@ def get_client_ip(request: Request) -> str:
 
 async def get_current_session(
     request: Request,
+    x_manager_version: Optional[str] = Header(None, alias="X-Manager-Version"),
     authorization: Optional[str] = Header(None, description="Bearer Session Token"),
 ) -> SessionData:
     """Valida il token di sessione opaco Bearer e restituisce la sessione utente attiva."""
+    if not x_manager_version or not is_supported(x_manager_version):
+        audit_logger.record(
+            "ACTION_FAILED",
+            client_ip=get_client_ip(request),
+            success=False,
+            details={"action": "UNSUPPORTED_MANAGER_VERSION", "path": request.url.path},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_426_UPGRADE_REQUIRED,
+            detail="Questa versione di EzTicket Manager non è piu supportata.",
+            headers={"X-Manager-Update-Required": "true"},
+        )
+
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

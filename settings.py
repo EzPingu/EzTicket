@@ -2,8 +2,7 @@
 settings.py
 Gruppi di comandi /config e /ezticket: espone a OGNI server le impostazioni che nella
 versione single-server erano cablate nel codice (tempi SLA e anti-abbandono, ore
-di inattività, ruoli assegnati da /staffaccettato, formato del nickname, team
-delle candidature, branding dei footer) più la lista degli amministratori del bot
+di inattività, team delle candidature, branding dei footer) più la lista degli amministratori del bot
 per quel server.
 
 Tutti i comandi agiscono SOLO sul server in cui vengono eseguiti e richiedono di
@@ -114,9 +113,7 @@ class ConfigGroup(app_commands.Group):
             name="🎭 Ruoli",
             value=(
                 f"Staff globale: {role(gconf.get('staff_role'))}\n"
-                f"Addetto candidature: {role(gconf.get('candidature_staff_role'))}\n"
-                f"Assegnati da `/staffaccettato`: "
-                + (", ".join(role(r) for r in (gconf.get("staff_accepted_role_ids") or [])) or "— nessuno")
+                f"Tipi candidatura: {len(gconf.get('candidature_types') or {})}"
             ),
             inline=False,
         )
@@ -130,11 +127,9 @@ class ConfigGroup(app_commands.Group):
             inline=False,
         )
 
-        nick_format = gconf.get("nick_format")
         embed.add_field(
             name="🏷️ Nickname / Branding / Team",
             value=(
-                f"Formato nickname: {f'`{nick_format}`' if nick_format else '— disattivato'} (`/config nickname`)\n"
                 f"Branding footer: `{branding_text(guild)}` (`/config branding`)\n"
                 f"Team candidature: {', '.join(guild_teams(guild.id)) or '—'} (`/config team`)"
             ),
@@ -210,92 +205,6 @@ class ConfigGroup(app_commands.Group):
         cfg.save()
         await interaction.response.send_message(
             f"✅ Il promemoria `/risponditicket` citerà **{ore} ore** di attesa prima della chiusura.",
-            ephemeral=True,
-        )
-
-    # ---------------------------------------------------------- ruoliaccettato
-    @app_commands.command(name="ruoliaccettato", description="[Admin server] Ruoli assegnati da /staffaccettato")
-    @app_commands.describe(
-        ruolo1="Primo ruolo da assegnare (obbligatorio; usa /config ruoliaccettato con un solo ruolo per sostituire tutti)",
-        ruolo2="Secondo ruolo (opzionale)",
-        ruolo3="Terzo ruolo (opzionale)",
-        ruolo4="Quarto ruolo (opzionale)",
-        ruolo5="Quinto ruolo (opzionale)",
-    )
-    async def ruoliaccettato(
-        self,
-        interaction: discord.Interaction,
-        ruolo1: discord.Role,
-        ruolo2: discord.Role | None = None,
-        ruolo3: discord.Role | None = None,
-        ruolo4: discord.Role | None = None,
-        ruolo5: discord.Role | None = None,
-    ):
-        if not await require_guild_admin(interaction):
-            return
-
-        scelti = [r for r in (ruolo1, ruolo2, ruolo3, ruolo4, ruolo5) if r is not None]
-        # dedup mantenendo l'ordine
-        ruoli = list(dict.fromkeys(scelti))[:MAX_ACCEPTED_ROLES]
-
-        me = interaction.guild.me
-        non_assegnabili = [
-            r for r in ruoli
-            if r.is_default() or r.managed or (me is not None and r >= me.top_role)
-        ]
-
-        gconf = cfg.guild(interaction.guild.id)
-        gconf["staff_accepted_role_ids"] = [r.id for r in ruoli]
-        cfg.save()
-
-        testo = f"✅ `/staffaccettato` assegnerà: {', '.join(r.mention for r in ruoli)}"
-        if non_assegnabili:
-            testo += (
-                f"\n\n⚠️ Attenzione: {', '.join(r.mention for r in non_assegnabili)} "
-                f"{'non è' if len(non_assegnabili) == 1 else 'non sono'} assegnabile dal bot "
-                f"(ruolo gestito da un'integrazione, o più in alto del ruolo del bot). "
-                f"Sposta il ruolo del bot più in alto in *Impostazioni Server > Ruoli*."
-            )
-        await interaction.response.send_message(testo, ephemeral=True)
-
-    # --------------------------------------------------------------- nickname
-    @app_commands.command(name="nickname", description="[Admin server] Formato del nickname applicato da /staffaccettato")
-    @app_commands.describe(
-        formato="Es: 'Helper » {nome}'. Segnaposto: {nome} {nick} {server}. Scrivi 'none' per non toccare i nickname."
-    )
-    async def nickname(self, interaction: discord.Interaction, formato: app_commands.Range[str, 1, 64]):
-        if not await require_guild_admin(interaction):
-            return
-        gconf = cfg.guild(interaction.guild.id)
-
-        if _is_reset(formato):
-            gconf["nick_format"] = None
-            cfg.save()
-            await interaction.response.send_message(
-                "✅ `/staffaccettato` non modificherà più i nickname in questo server.", ephemeral=True
-            )
-            return
-
-        try:
-            anteprima = formato.format(
-                nome=interaction.user.name,
-                nick=interaction.user.display_name,
-                server=interaction.guild.name,
-            )[:32]
-        except (KeyError, IndexError, ValueError):
-            await interaction.response.send_message(
-                "⚠️ Formato non valido: i segnaposto ammessi sono `{nome}`, `{nick}` e `{server}`.\n"
-                "Esempio corretto: `Helper » {nome}`",
-                ephemeral=True,
-            )
-            return
-
-        gconf["nick_format"] = formato
-        cfg.save()
-        await interaction.response.send_message(
-            f"✅ Formato nickname impostato su `{formato}`.\n"
-            f"👀 Anteprima con il tuo account: `{anteprima}`\n"
-            f"ℹ️ Discord limita i nickname a 32 caratteri: quelli più lunghi vengono troncati.",
             ephemeral=True,
         )
 
@@ -510,7 +419,34 @@ class ConfigGroup(app_commands.Group):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class BackupGroup(app_commands.Group):
+    """Comandi relativi allo stato dei dati persistiti e ripristinati."""
+
+    def __init__(self):
+        super().__init__(
+            name="backup",
+            description="Stato dei dati salvati del bot",
+            guild_only=True,
+        )
+
+    @app_commands.command(name="status", description="Mostra lo stato del ripristino dopo un riavvio")
+    async def status(self, interaction: discord.Interaction):
+        if not await require_staff(interaction):
+            return
+
+        embed = discord.Embed(
+            title="🔄 Riavvio rilevato",
+            description=(
+                "Ho rilevato un riavvio o un crash del bot.\n"
+                "Tutti i dati e le impostazioni salvate in precedenza sono stati ripristinati correttamente."
+            ),
+            timestamp=datetime.now(timezone.utc),
+        )
+        await interaction.response.send_message(embed=embed)
+
+
 config_group = ConfigGroup()
+backup_group = BackupGroup()
 
 
 class ManagerGroup(app_commands.Group):

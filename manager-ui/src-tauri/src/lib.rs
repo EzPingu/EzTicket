@@ -1,11 +1,74 @@
+use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Manager;
+
+const DISCORD_APPLICATION_ID: &str = "1530649733822156931";
+
+struct RichPresenceHandle {
+    stop: Sender<()>,
+}
+
+fn start_rich_presence() -> RichPresenceHandle {
+    let (stop, receiver) = mpsc::channel();
+    std::thread::spawn(move || rich_presence_worker(receiver));
+    RichPresenceHandle { stop }
+}
+
+fn rich_presence_worker(stop: Receiver<()>) {
+    let Ok(mut client) = DiscordIpcClient::new(DISCORD_APPLICATION_ID) else {
+        return;
+    };
+    if client.connect().is_err() {
+        return;
+    }
+
+    let assets = activity::Assets::new()
+        .large_image("logo")
+        .large_text("EzTicket Manager");
+    let presence = activity::Activity::new()
+        .details("Gestione server e ticket")
+        .state("Online")
+        .assets(assets)
+        .timestamps(
+            activity::Timestamps::new().start(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs() as i64)
+                    .unwrap_or_default(),
+            ),
+        );
+
+    if client.set_activity(presence).is_err() {
+        let _ = client.close();
+        return;
+    }
+
+    let _ = stop.recv();
+    let _ = client.clear_activity();
+    let _ = client.close();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .setup(|app| {
+            app.manage(start_rich_presence());
+            Ok(())
+        })
         .manage(std::sync::Arc::new(std::sync::Mutex::new(None::<String>)))
         .invoke_handler(tauri::generate_handler![start_oauth_callback, wait_oauth_callback])
         .plugin(tauri_plugin_opener::init())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|app: &tauri::AppHandle<tauri::Wry>, event: tauri::RunEvent| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let handle = app.state::<RichPresenceHandle>();
+                let _ = handle.stop.send(());
+            }
+        });
 }
 
 #[tauri::command]

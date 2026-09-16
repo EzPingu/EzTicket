@@ -14,10 +14,12 @@ from manager_backend.api.routes_history import router as history_router
 from manager_backend.api.routes_applications import router as applications_router
 from manager_backend.api.routes_dashboard import router as dashboard_router
 from manager_backend.api.routes_statistics import router as statistics_router
+from manager_backend.api.routes_version import router as version_router
 
 api_v1_router = APIRouter(prefix="/api/v1")
 
 api_v1_router.include_router(health_router)
+api_v1_router.include_router(version_router)
 api_v1_router.include_router(auth_router)
 api_v1_router.include_router(guilds_router)
 api_v1_router.include_router(dashboard_router)

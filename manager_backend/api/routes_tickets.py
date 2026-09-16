@@ -5,8 +5,11 @@ Tutti gli endpoint applicano controlli server-side anti-IDOR/BOLA e audit loggin
 """
 from __future__ import annotations
 
-from typing import Optional
+import asyncio
+import json
+from typing import AsyncIterator, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
 from manager_backend.audit import audit_logger
 from manager_backend.auth.session import SessionData
@@ -26,8 +29,44 @@ from manager_backend.security.dependencies import (
 )
 from manager_backend.services.guild_service import GuildAccessInfo
 from manager_backend.services.ticket_service import ticket_service
+from manager_backend.services.ticket_realtime import ticket_realtime
 
 router = APIRouter(prefix="/guilds/{guild_id}/tickets/active", tags=["Active Tickets"])
+
+
+@router.get("/{channel_id}/events")
+async def ticket_events(
+    guild_id: str,
+    channel_id: str,
+    session: SessionData = Depends(get_current_session),
+    access: GuildAccessInfo = Depends(require_guild_staff),
+) -> StreamingResponse:
+    """Invia i nuovi messaggi del ticket tramite Server-Sent Events."""
+    if not channel_id.isdigit():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Identificativo channel_id non valido.")
+
+    gconf = ticket_service.get_active_tickets(guild_id)
+    if not any(ticket.channel_id == channel_id for ticket in gconf):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket non trovato.")
+
+    queue, subscriber = ticket_realtime.subscribe(guild_id, channel_id)
+
+    async def stream() -> AsyncIterator[str]:
+        try:
+            while True:
+                try:
+                    message = await asyncio.wait_for(queue.get(), timeout=20)
+                    yield f"data: {json.dumps(message, ensure_ascii=True)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            ticket_realtime.unsubscribe(guild_id, channel_id, subscriber)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("", response_model=list[TicketSummaryResponse])
@@ -77,7 +116,7 @@ async def get_active_ticket_detail(
     ticket = await ticket_service.get_ticket_detail(guild_id, channel_id)
     if ticket is None:
         audit_logger.record(
-            "ACCESS_DENIED",
+            "ACTION_FAILED",
             user_id=session.user_id,
             guild_id=guild_id,
             client_ip=client_ip,
@@ -121,7 +160,7 @@ async def claim_ticket(
         res = await ticket_service.claim_ticket(guild_id, channel_id, session.user_id)
     except HTTPException as exc:
         audit_logger.record(
-            "ACCESS_DENIED",
+            "ACTION_FAILED",
             user_id=session.user_id,
             guild_id=guild_id,
             client_ip=client_ip,
@@ -168,7 +207,7 @@ async def close_ticket(
         res = await ticket_service.close_ticket(guild_id, channel_id, session.user_id, reason=reason)
     except HTTPException as exc:
         audit_logger.record(
-            "ACCESS_DENIED",
+            "ACTION_FAILED",
             user_id=session.user_id,
             guild_id=guild_id,
             client_ip=client_ip,
@@ -213,7 +252,7 @@ async def reply_to_ticket(
         )
         raise
     audit_logger.record(
-        "TICKET_REPLY",
+        "TICKET_MESSAGE",
         user_id=session.user_id,
         guild_id=guild_id,
         client_ip=get_client_ip(request),

@@ -12,6 +12,8 @@
           "url": "https://discord.com/oauth2/authorize*"
         }
       ]
-    }
+    },
+    "process:allow-restart",
+    "updater:default"
   ]
 }
