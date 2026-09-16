@@ -11,14 +11,8 @@ permissions:
 
 jobs:
   publish:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - windows-latest
-          - ubuntu-22.04
-          - macos-latest
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
