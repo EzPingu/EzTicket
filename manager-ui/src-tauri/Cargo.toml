@@ -1,6 +1,6 @@
 [package]
 name = "ezticket-manager"
-version = "1.1.0"
+version = "1.2.0"
 description = "EzTicket Manager desktop application"
 authors = ["EzTicket"]
 edition = "2021"
