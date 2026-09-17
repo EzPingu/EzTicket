@@ -67,6 +67,7 @@ from candidature import (
     handle_candidatura_dm_answer,
 )
 from settings import backup_group, config_group, ezticket_group
+from manager_backend.services.version_service import get_policy
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 log = logging.getLogger("ticketbot")
@@ -95,6 +96,9 @@ _presence_task: asyncio.Task | None = None
 # Task di sfondo di cui teniamo un riferimento, così non vengono interrotti
 # dal garbage collector a metà esecuzione.
 _background_tasks: set[asyncio.Task] = set()
+NOTIFY_PERMISSION_ROLE_ID = 1389309438053187664
+NOTIFY_DM_CONCURRENCY = 5
+_notify_dm_semaphore = asyncio.Semaphore(NOTIFY_DM_CONCURRENCY)
 
 
 def _spawn(coro) -> None:
@@ -586,6 +590,167 @@ async def setlogticketstaff(interaction: discord.Interaction, canale: discord.Te
 @app_commands.guild_only()
 async def slachannel(interaction: discord.Interaction, canale: discord.TextChannel):
     await handle_slachannel(interaction, canale)
+
+
+NOTIFY_PRESETS = (
+    "Notifica EzTicket Manager",
+    "Notifica aggiornamento",
+    "Nuovo annuncio",
+    "Messaggio personalizzato",
+)
+
+
+def _notify_embed(
+    *,
+    preset: str,
+    guild: discord.Guild,
+    custom_message: str | None,
+) -> discord.Embed:
+    timestamp = datetime.now(timezone.utc)
+    embed = discord.Embed(
+        title=preset,
+        color=discord.Color.blurple(),
+        timestamp=timestamp,
+    )
+    if preset == "Notifica EzTicket Manager":
+        policy = get_policy()
+        embed.title = "⚠️ Aggiornamento necessario"
+        embed.description = (
+            "Per continuare ad utilizzare EzTicket Manager devi aggiornare "
+            "alla nuova versione."
+        )
+        embed.add_field(name="Versione disponibile", value=policy.current_version, inline=True)
+        embed.add_field(name="Versione minima", value=policy.minimum_version, inline=True)
+        if policy.download_url:
+            embed.add_field(name="Download", value=f"[Scarica la nuova versione]({policy.download_url})", inline=False)
+    elif preset == "Notifica aggiornamento":
+        embed.description = "È disponibile un nuovo aggiornamento per EzTicket."
+    elif preset == "Nuovo annuncio":
+        embed.description = "È disponibile un nuovo annuncio."
+    else:
+        embed.description = (custom_message or "").strip()[:4096]
+    embed.add_field(name="Data", value=f"<t:{int(timestamp.timestamp())}:F>", inline=False)
+    embed.set_footer(text="By EzPingu")
+    return embed
+
+
+def _notify_view(preset: str):
+    if preset != "Notifica EzTicket Manager":
+        return None
+    policy = get_policy()
+    if not policy.download_url:
+        return None
+    view = discord.ui.View()
+    view.add_item(
+        discord.ui.Button(
+            label="Scarica nuova versione",
+            emoji="🟢",
+            style=discord.ButtonStyle.link,
+            url=policy.download_url,
+        )
+    )
+    return view
+
+
+@bot.tree.command(name="notify", description="Invia una notifica tramite DM")
+@app_commands.describe(
+    ruolo="Ruolo a cui inviare la notifica",
+    membro="Membro a cui inviare la notifica",
+    preset="Tipo di notifica",
+    silent="Non mostrare l'embed di conferma",
+    messaggio="Testo per il preset Messaggio personalizzato",
+)
+@app_commands.choices(
+    preset=[app_commands.Choice(name=value, value=value) for value in NOTIFY_PRESETS]
+)
+@app_commands.guild_only()
+async def notify(
+    interaction: discord.Interaction,
+    preset: app_commands.Choice[str],
+    ruolo: discord.Role | None = None,
+    membro: discord.Member | None = None,
+    silent: bool = False,
+    messaggio: str | None = None,
+):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("⚠️ Questo comando funziona solo dentro un server.", ephemeral=True)
+        return
+    if not any(role.id == NOTIFY_PERMISSION_ROLE_ID for role in interaction.user.roles):
+        await interaction.response.send_message(
+            "🚫 Non possiedi il ruolo necessario per usare `/notify`.",
+            ephemeral=True,
+        )
+        return
+    if (ruolo is None) == (membro is None):
+        await interaction.response.send_message(
+            "⚠️ Specifica un solo destinatario: `ruolo` oppure `membro`.",
+            ephemeral=True,
+        )
+        return
+    if preset.value == "Messaggio personalizzato" and not (messaggio or "").strip():
+        await interaction.response.send_message(
+            "⚠️ Il preset `Messaggio personalizzato` richiede il parametro `messaggio`.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    embed = _notify_embed(preset=preset.value, guild=guild, custom_message=messaggio)
+    view = _notify_view(preset.value)
+
+    if ruolo is not None:
+        if not guild.chunked:
+            try:
+                await guild.chunk(cache=True)
+            except (discord.ClientException, discord.HTTPException, asyncio.TimeoutError):
+                log.warning("Chunking di %s (%s) non riuscito per /notify.", guild.name, guild.id)
+        recipients = [member for member in ruolo.members if not member.bot]
+        target_text = ruolo.mention
+    else:
+        recipients = [] if membro.bot else [membro]
+        target_text = membro.mention
+
+    async def send_one(member: discord.Member) -> bool:
+        async with _notify_dm_semaphore:
+            for attempt in range(2):
+                try:
+                    await member.send(embed=embed, view=view)
+                    return True
+                except discord.Forbidden:
+                    log.info("DM /notify chiuso per %s in %s.", member.id, guild.id)
+                    return False
+                except discord.HTTPException as exc:
+                    if exc.status == 429 and attempt == 0:
+                        await asyncio.sleep(max(float(exc.retry_after or 1), 0))
+                        continue
+                    log.warning("DM /notify non inviato a %s in %s: HTTP %s", member.id, guild.id, exc.status)
+                    return False
+            return False
+
+    results = await asyncio.gather(*(send_one(member) for member in recipients))
+    sent_count = sum(results)
+    failed_count = len(results) - sent_count
+    if not silent:
+        confirmation = discord.Embed(
+            title="✅ Notifica inviata",
+            description=f"Mandato manualmente a tutti i membri con il ruolo {target_text}",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        if membro is not None:
+            confirmation.description = f"Mandato manualmente a {target_text}"
+        confirmation.add_field(name="Eseguito da", value=interaction.user.mention, inline=True)
+        confirmation.add_field(name="Destinatari", value=str(len(recipients)), inline=True)
+        confirmation.add_field(name="DM inviati con successo", value=str(sent_count), inline=True)
+        confirmation.add_field(name="DM non inviati", value=str(failed_count), inline=True)
+        confirmation.add_field(
+            name="Data/ora",
+            value=f"<t:{int(datetime.now(timezone.utc).timestamp())}:F>",
+            inline=False,
+        )
+        confirmation.set_footer(text="By EzPingu")
+        await interaction.followup.send(embed=confirmation, ephemeral=True)
 
 
 @bot.tree.command(name="candidaturestaffcanale", description="[Admin server] Canale dove arrivano le candidature staff completate")

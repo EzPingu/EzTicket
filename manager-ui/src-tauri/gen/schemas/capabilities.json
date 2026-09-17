@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability for EzTicket Manager","local":true,"windows":["main"],"permissions":["core:default",{"identifier":"opener:allow-open-url","allow":[{"url":"https://discord.com/oauth2/authorize*"}]},"process:allow-restart","updater:default"]}}
+{"default":{"identifier":"default","description":"Default capability for EzTicket Manager","local":true,"windows":["main"],"permissions":["core:default",{"identifier":"opener:allow-open-url","allow":[{"url":"https://discord.com/oauth2/authorize*"}]}]}}

@@ -42,6 +42,7 @@ class BackendConfig:
     discord_redirect_uri: str = os.getenv(
         "DISCORD_OAUTH_REDIRECT_URI", "http://127.0.0.1:8765/callback"
     ).strip()
+    discord_bot_token: str = os.getenv("DISCORD_BOT_TOKEN", os.getenv("DISCORD_TOKEN", "")).strip()
 
     # --- Session Settings ---
     session_secret_key: str = (

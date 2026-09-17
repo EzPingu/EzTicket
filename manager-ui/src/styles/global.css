@@ -63,8 +63,6 @@ button { font: inherit; color: inherit; border: 0; cursor: pointer; }
 .update-card p { color: #b4bac8; font-size: 13px; line-height: 1.7; }
 .update-card .update-subtitle { color: #7f8798; font-size: 11px; }
 .update-status { display: block; margin: 18px 0; color: #a98cff; font-size: 11px; }
-.update-progress { height: 7px; margin: 22px 0 0; overflow: hidden; background: #292e39; border-radius: 10px; }
-.update-progress-bar { height: 100%; min-width: 8%; background: linear-gradient(90deg,#8661ed,#b18cff); border-radius: 10px; transition: width .25s ease; }
 .update-icon { font-size: 32px; }
 .auth-glow { position: absolute; width: 520px; height: 520px; background: #6847d51c; filter: blur(90px); border-radius: 50%; }
 .auth-card { z-index: 1; width: min(430px, calc(100% - 48px)); padding: 42px; text-align: center; background: #151820e8; border: 1px solid #303447; border-radius: 20px; box-shadow: 0 24px 80px #0008; }

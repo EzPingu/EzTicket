@@ -59,8 +59,6 @@ pub fn run() {
         .manage(std::sync::Arc::new(std::sync::Mutex::new(None::<String>)))
         .invoke_handler(tauri::generate_handler![start_oauth_callback, wait_oauth_callback])
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
     app.run(|app: &tauri::AppHandle<tauri::Wry>, event: tauri::RunEvent| {

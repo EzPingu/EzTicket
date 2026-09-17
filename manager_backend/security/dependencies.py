@@ -13,6 +13,8 @@ from manager_backend.auth.session import SessionData, session_store
 from manager_backend.models.schemas import UserProfileResponse
 from manager_backend.services.guild_service import GuildAccessInfo, guild_service
 from manager_backend.services.version_service import is_supported
+from manager_backend.services.update_notification_service import send_required_update_dm
+from manager_backend.services.version_service import get_policy
 
 
 def get_client_ip(request: Request) -> str:
@@ -29,19 +31,6 @@ async def get_current_session(
     authorization: Optional[str] = Header(None, description="Bearer Session Token"),
 ) -> SessionData:
     """Valida il token di sessione opaco Bearer e restituisce la sessione utente attiva."""
-    if not x_manager_version or not is_supported(x_manager_version):
-        audit_logger.record(
-            "ACTION_FAILED",
-            client_ip=get_client_ip(request),
-            success=False,
-            details={"action": "UNSUPPORTED_MANAGER_VERSION", "path": request.url.path},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_426_UPGRADE_REQUIRED,
-            detail="Questa versione di EzTicket Manager non è piu supportata.",
-            headers={"X-Manager-Update-Required": "true"},
-        )
-
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -62,6 +51,30 @@ async def get_current_session(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Sessione non valida o scaduta.",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not x_manager_version or not is_supported(x_manager_version):
+        policy = get_policy()
+        installed_version = x_manager_version or "sconosciuta"
+        notification_key = f"{installed_version}:{policy.minimum_version}"
+        if session_store.mark_update_notification(session.session_token, notification_key):
+            await send_required_update_dm(
+                user_id=session.user_id,
+                installed_version=installed_version,
+                minimum_version=policy.minimum_version,
+                download_url=policy.download_url,
+            )
+        audit_logger.record(
+            "ACTION_FAILED",
+            user_id=session.user_id,
+            client_ip=get_client_ip(request),
+            success=False,
+            details={"action": "UNSUPPORTED_MANAGER_VERSION", "path": request.url.path},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_426_UPGRADE_REQUIRED,
+            detail="Questa versione di EzTicket Manager non è più supportata.",
+            headers={"X-Manager-Update-Required": "true"},
         )
     return session
 

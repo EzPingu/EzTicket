@@ -13,7 +13,7 @@ import { ApplicationsWorkspace } from "../features/applications/ApplicationsWork
 export type ViewKey = "Dashboard" | "Ticket" | "Candidature" | "Storico" | "Statistiche" | "Configurazione" | "Audit";
 
 function AuthenticatedApp() {
-  const { status, token, user, guilds, reloadGuilds, logout, expireSession, updateVersion, updateProgress, updateMessage, retryUpdate } = useAuth();
+  const { status, token, user, guilds, reloadGuilds, logout, expireSession, minimumVersion, error } = useAuth();
   const [selectedGuild, setSelectedGuild] = useState<GuildSummary | null>(null);
   const [guildDetail, setGuildDetail] = useState<GuildDetail | null>(null);
   const [guildMe, setGuildMe] = useState<GuildUserProfile | null>(null);
@@ -64,9 +64,8 @@ function AuthenticatedApp() {
   };
 
   if (status === "loading") return <div className="full-state"><span className="button-spinner" />Avvio di EzTicket Manager...</div>;
-  if (status === "updating" || status === "update_error") {
-    return <UpdateScreen status={status} version={updateVersion} progress={updateProgress} message={updateMessage} onRetry={retryUpdate} />;
-  }
+  if (status === "version_blocked") return <VersionBlockedScreen minimumVersion={minimumVersion} />;
+  if (status === "version_unavailable") return <VersionUnavailableScreen message={error} />;
   if (status === "anonymous") return <LoginScreen />;
   if (selectionLoading) return <div className="full-state"><span className="button-spinner" />Caricamento del server...</div>;
   if (!selectedGuild || !guildDetail || !guildMe) {
@@ -78,31 +77,25 @@ function AuthenticatedApp() {
   </Layout>;
 }
 
-function UpdateScreen({
-  status,
-  version,
-  progress,
-  message,
-  onRetry,
-}: {
-  status: "updating" | "update_error";
-  version: string | null;
-  progress: { downloaded: number; total: number | null } | null;
-  message: string;
-  onRetry: () => void;
-}) {
-  const percentage = progress?.total ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100)) : null;
+function VersionBlockedScreen({ minimumVersion }: { minimumVersion: string | null }) {
   return <main className="update-screen" role="dialog" aria-modal="true">
     <section className="update-card">
-      <span className="update-icon">↻</span>
-      <h1>{status === "update_error" ? "Aggiornamento non riuscito" : "Aggiornamento di EzTicket Manager"}</h1>
-      <p>L'app si sta aggiornando alla versione <strong>v{version ?? "disponibile"}</strong></p>
-      <p className="update-subtitle">Senza questo aggiornamento l'app non può essere avviata per motivi di sicurezza.</p>
-      {status === "updating" && <div className="update-progress" aria-label="Progresso aggiornamento">
-        <div className="update-progress-bar" style={{ width: `${percentage ?? 35}%` }} />
-      </div>}
-      <span className="update-status">{message}</span>
-      {status === "update_error" && <button className="secondary-button" onClick={onRetry}>Riprova</button>}
+      <span className="update-icon">⚠</span>
+      <h1>Aggiornamento necessario</h1>
+      <p>È disponibile un aggiornamento obbligatorio per continuare ad usare EzTicket Manager.</p>
+      <p className="update-subtitle">Controlla i tuoi DM Discord per ricevere il link e le istruzioni per aggiornare.</p>
+      {minimumVersion && <span className="update-status">Versione minima richiesta: v{minimumVersion}</span>}
+    </section>
+  </main>;
+}
+
+function VersionUnavailableScreen({ message }: { message: string | null }) {
+  return <main className="update-screen" role="alert" aria-live="assertive">
+    <section className="update-card">
+      <span className="update-icon">⚠</span>
+      <h1>Impossibile verificare la versione</h1>
+      <p>Controlla la connessione e riprova.</p>
+      {message && <p className="update-subtitle">{message}</p>}
     </section>
   </main>;
 }

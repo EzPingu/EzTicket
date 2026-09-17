@@ -24,6 +24,7 @@ class SessionData:
     discord_guilds: Optional[list[dict]] = None
     created_at: int = 0
     expires_at: int = 0
+    update_notification_key: Optional[str] = None
 
     @property
     def is_expired(self) -> bool:
@@ -95,6 +96,14 @@ class SessionStore:
     def clear(self) -> None:
         with self._lock:
             self._sessions.clear()
+
+    def mark_update_notification(self, session_token: str, key: str) -> bool:
+        with self._lock:
+            session = self._sessions.get(session_token)
+            if not session or session.is_expired or session.update_notification_key == key:
+                return False
+            session.update_notification_key = key
+            return True
 
 
 session_store = SessionStore()
