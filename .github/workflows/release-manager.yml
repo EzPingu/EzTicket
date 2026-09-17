@@ -44,4 +44,5 @@ jobs:
           releaseBody: Signed installers and updater artifacts for EzTicket Manager.
           releaseDraft: false
           prerelease: false
+          updaterJsonPreferNsis: true
           args: "--bundles nsis"
