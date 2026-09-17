@@ -1,4 +1,3 @@
-```ts
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -145,4 +144,3 @@ export async function installAvailableUpdate(
     version: update.version,
   };
 }
-```
