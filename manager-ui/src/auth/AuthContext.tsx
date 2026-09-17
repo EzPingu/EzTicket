@@ -61,7 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Discord OAuth is required so the backend can send the mandatory-update DM.
         setStatus("anonymous");
       } else if (result.state === "unavailable") {
-        setError("Impossibile verificare la versione. Controlla la connessione e riprova.");
+        setError(result.error.message);
         setStatus("version_unavailable");
       } else {
         setStatus("anonymous");

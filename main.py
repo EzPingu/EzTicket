@@ -605,6 +605,7 @@ def _notify_embed(
     preset: str,
     guild: discord.Guild,
     custom_message: str | None,
+    recipient: discord.Member | None = None,
 ) -> discord.Embed:
     timestamp = datetime.now(timezone.utc)
     embed = discord.Embed(
@@ -614,15 +615,17 @@ def _notify_embed(
     )
     if preset == "Notifica EzTicket Manager":
         policy = get_policy()
-        embed.title = "⚠️ Aggiornamento necessario"
+        embed.title = "🛡️ EzTicket Manager"
         embed.description = (
-            "Per continuare ad utilizzare EzTicket Manager devi aggiornare "
-            "alla nuova versione."
+            f"Ciao {recipient.mention if recipient else '@utente'}! 👋\n\n"
+            "Se ricevi questo messaggio è perché fai parte dello staff "
+            f"di **{guild.name}**.\n\n"
+            "Per gestire ticket, candidature, statistiche e le altre funzioni "
+            "dello staff in modo più semplice e veloce, scarica EzTicket Manager.\n\n"
+            "Clicca il pulsante qui sotto per scaricare l'app e iniziare ad utilizzarla."
         )
         embed.add_field(name="Versione disponibile", value=policy.current_version, inline=True)
         embed.add_field(name="Versione minima", value=policy.minimum_version, inline=True)
-        if policy.download_url:
-            embed.add_field(name="Download", value=f"[Scarica la nuova versione]({policy.download_url})", inline=False)
     elif preset == "Notifica aggiornamento":
         embed.description = "È disponibile un nuovo aggiornamento per EzTicket."
     elif preset == "Nuovo annuncio":
@@ -643,7 +646,7 @@ def _notify_view(preset: str):
     view = discord.ui.View()
     view.add_item(
         discord.ui.Button(
-            label="Scarica nuova versione",
+            label="Scarica EzTicket Manager",
             emoji="🟢",
             style=discord.ButtonStyle.link,
             url=policy.download_url,
@@ -696,9 +699,6 @@ async def notify(
 
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
-    embed = _notify_embed(preset=preset.value, guild=guild, custom_message=messaggio)
-    view = _notify_view(preset.value)
-
     if ruolo is not None:
         if not guild.chunked:
             try:
@@ -713,9 +713,16 @@ async def notify(
 
     async def send_one(member: discord.Member) -> bool:
         async with _notify_dm_semaphore:
+            member_embed = _notify_embed(
+                preset=preset.value,
+                guild=guild,
+                custom_message=messaggio,
+                recipient=member,
+            )
+            member_view = _notify_view(preset.value)
             for attempt in range(2):
                 try:
-                    await member.send(embed=embed, view=view)
+                    await member.send(embed=member_embed, view=member_view)
                     return True
                 except discord.Forbidden:
                     log.info("DM /notify chiuso per %s in %s.", member.id, guild.id)
@@ -734,16 +741,18 @@ async def notify(
     if not silent:
         confirmation = discord.Embed(
             title="✅ Notifica inviata",
-            description=f"Mandato manualmente a tutti i membri con il ruolo {target_text}",
+            description=(
+                f"Mandato manualmente da {interaction.user.mention} a tutti i membri "
+                f"che hanno il ruolo {target_text}."
+                if ruolo is not None
+                else f"Messaggio inviato da {interaction.user.mention} a te."
+            ),
             color=discord.Color.green(),
             timestamp=datetime.now(timezone.utc),
         )
-        if membro is not None:
-            confirmation.description = f"Mandato manualmente a {target_text}"
-        confirmation.add_field(name="Eseguito da", value=interaction.user.mention, inline=True)
         confirmation.add_field(name="Destinatari", value=str(len(recipients)), inline=True)
-        confirmation.add_field(name="DM inviati con successo", value=str(sent_count), inline=True)
-        confirmation.add_field(name="DM non inviati", value=str(failed_count), inline=True)
+        confirmation.add_field(name="Inviati con successo", value=str(sent_count), inline=True)
+        confirmation.add_field(name="Falliti", value=str(failed_count), inline=True)
         confirmation.add_field(
             name="Data/ora",
             value=f"<t:{int(datetime.now(timezone.utc).timestamp())}:F>",
