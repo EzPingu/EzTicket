@@ -23,17 +23,30 @@ export async function apiRequest<T>(
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 15000);
   const headers = new Headers(options.headers);
-  headers.set("Content-Type", "application/json");
+  if (options.body) headers.set("Content-Type", "application/json");
   headers.set("X-Manager-Version", APP_VERSION);
   if (token) headers.set("Authorization", "Bearer " + token);
+  const url = `${API_BASE_URL}${path}`;
+  const isVersionCheck = path === "/app/version";
 
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    if (isVersionCheck) {
+      console.info("[VersionCheck] richiesta", { url, appVersion: APP_VERSION });
+    }
+    const response = await fetch(url, {
       ...options,
       headers,
       signal: controller.signal,
     });
     const body = await response.json().catch(() => null);
+    if (isVersionCheck) {
+      console.info("[VersionCheck] risposta", {
+        url,
+        status: response.status,
+        ok: response.ok,
+        body,
+      });
+    }
     if (!response.ok) {
       const message =
         typeof body?.detail === "string"
@@ -45,6 +58,13 @@ export async function apiRequest<T>(
     }
     return body as T;
   } catch (error) {
+    if (isVersionCheck) {
+      console.error("[VersionCheck] errore", {
+        url,
+        error: error instanceof Error ? error.message : String(error),
+        name: error instanceof Error ? error.name : undefined,
+      });
+    }
     if (error instanceof ApiError) throw error;
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new ApiError("Il server ha impiegato troppo tempo a rispondere.", 408);
