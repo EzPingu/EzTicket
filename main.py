@@ -112,6 +112,15 @@ class ManagerNotMeButton(discord.ui.DynamicItem[discord.ui.Button],
             custom_id=f"manager_login_not_me:{user_id}"))
         self.user_id = int(user_id)
 
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Button,
+        match: re.Match[str],
+    ) -> "ManagerNotMeButton":
+        return cls(int(match.group("user_id")))
+
     async def callback(self, interaction: discord.Interaction) -> None:
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Questo avviso non appartiene al tuo account.", ephemeral=True)

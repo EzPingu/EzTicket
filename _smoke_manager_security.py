@@ -9,6 +9,8 @@ from manager_backend.services.manager_security_service import (
 )
 import asyncio
 import manager_backend.services.manager_notification_service as notifications
+import re
+import main as bot_main
 
 
 def main() -> None:
@@ -48,6 +50,12 @@ def main() -> None:
         user_id=user_id, username="Discord Name", login_at=1, logout_at=2
     ))
     assert sent.pop()["embeds"][0]["title"] == "🟢 LOGOUT eseguito con successo"
+    button = bot_main.ManagerNotMeButton(123456789)
+    match = re.fullmatch(r"manager_login_not_me:(?P<user_id>[0-9]+)", button.item.custom_id)
+    assert match is not None
+    reconstructed = asyncio.run(bot_main.ManagerNotMeButton.from_custom_id(None, button.item, match))
+    assert reconstructed.user_id == 123456789
+    assert reconstructed.item.custom_id == "manager_login_not_me:123456789"
     print("Manager security smoke: OK")
 
 
