@@ -38,6 +38,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_API_BASE_URL: https://manager-api.freesrv.com/api/v1
+          VITE_DISCORD_CLIENT_ID: 1530649733822156931
         with:
           projectPath: manager-ui
           tagName: manager-v__VERSION__
