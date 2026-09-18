@@ -85,6 +85,15 @@ class SessionStore:
         with self._lock:
             return self._sessions.pop(token, None) is not None
 
+    def revoke_user_sessions(self, user_id: int) -> int:
+        """Revoke every active session belonging to one Discord user."""
+        with self._lock:
+            tokens = [token for token, session in self._sessions.items()
+                      if session.user_id == int(user_id)]
+            for token in tokens:
+                self._sessions.pop(token, None)
+            return len(tokens)
+
     def purge_expired(self) -> int:
         now = time.time()
         with self._lock:

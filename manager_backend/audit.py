@@ -98,12 +98,17 @@ class AuditLogger:
             return
         color = 0x57D39B if event.success else 0xED6A5A
         title = "✅ " + event.event_type if event.success else "❌ Azione fallita"
+        display_name = event.details.get("global_name") or event.details.get("username")
+        user_label = f"{display_name} (`{event.user_id}`)" if display_name and event.user_id else f"`{event.user_id or 'n/d'}`"
         fields = [
             {"name": "Azione", "value": f"`{event.event_type}`", "inline": True},
-            {"name": "Discord ID", "value": f"`{event.user_id or 'n/d'}`", "inline": True},
+            {"name": "Utente", "value": user_label[:1024], "inline": True},
             {"name": "Guild", "value": f"`{event.guild_id or 'n/d'}`", "inline": True},
             {"name": "Ora", "value": f"<t:{event.timestamp}:F>", "inline": False},
+            {"name": "Risultato", "value": "✅ Operazione riuscita" if event.success else "❌ Operazione negata", "inline": True},
         ]
+        if display_name:
+            fields.insert(1, {"name": "Nome Discord", "value": str(display_name)[:256], "inline": True})
         for key in ("ticket_id", "channel_id", "ticket_number", "application_id", "target_user_id"):
             if key in event.details:
                 fields.append({"name": key.replace("_", " ").title(), "value": f"`{event.details[key]}`", "inline": True})

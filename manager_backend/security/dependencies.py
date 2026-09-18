@@ -150,14 +150,6 @@ async def require_guild_access(
             detail=f"Accesso negato: non sei autorizzato ad accedere alla guild {guild_id}.",
         )
 
-    audit_logger.record(
-        "GUILD_ACCESS_GRANTED",
-        user_id=session.user_id,
-        guild_id=guild_id,
-        client_ip=client_ip,
-        success=True,
-        details={"role": access.role, "path": request.url.path},
-    )
     return access
 
 

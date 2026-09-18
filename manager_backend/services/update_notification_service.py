@@ -11,6 +11,34 @@ from manager_backend.config import backend_cfg
 log = logging.getLogger("ezticket.manager.update_notification")
 DISCORD_API_BASE = "https://discord.com/api/v10"
 
+async def send_discord_dm(*, user_id: int, payload: dict) -> bool:
+    """Send a bot DM through the shared Discord REST notification path."""
+    if not backend_cfg.discord_bot_token:
+        log.warning("Discord bot token non configurato: DM non inviato")
+        return False
+    headers = {"Authorization": f"Bot {backend_cfg.discord_bot_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            channel_response = await client.post(
+                f"{DISCORD_API_BASE}/users/@me/channels",
+                headers=headers,
+                json={"recipient_id": str(user_id)},
+            )
+            if channel_response.status_code not in (200, 201):
+                return False
+            channel_id = channel_response.json().get("id")
+            if not channel_id:
+                return False
+            message_response = await client.post(
+                f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
+                headers=headers,
+                json=payload,
+            )
+            return message_response.status_code in (200, 201)
+    except httpx.HTTPError:
+        log.exception("Errore di rete durante l'invio del DM a user %s", user_id)
+        return False
+
 
 async def send_required_update_dm(
     *,
@@ -19,10 +47,6 @@ async def send_required_update_dm(
     minimum_version: str,
     download_url: str,
 ) -> bool:
-    if not backend_cfg.discord_bot_token:
-        log.error("Discord bot token non configurato: impossibile inviare il DM di aggiornamento")
-        return False
-
     current_timestamp = int(datetime.now(timezone.utc).timestamp())
     payload = {
         "content": f"Ciao <@{user_id}>! 👋",
@@ -61,30 +85,4 @@ async def send_required_update_dm(
             }
         ],
     }
-    headers = {"Authorization": f"Bot {backend_cfg.discord_bot_token}"}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            channel_response = await client.post(
-                f"{DISCORD_API_BASE}/users/@me/channels",
-                headers=headers,
-                json={"recipient_id": str(user_id)},
-            )
-            if channel_response.status_code not in (200, 201):
-                log.warning("Creazione DM Discord fallita per user %s: HTTP %s", user_id, channel_response.status_code)
-                return False
-            channel_id = channel_response.json().get("id")
-            if not channel_id:
-                log.warning("Discord non ha restituito il canale DM per user %s", user_id)
-                return False
-            message_response = await client.post(
-                f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
-                headers=headers,
-                json=payload,
-            )
-            if message_response.status_code not in (200, 201):
-                log.warning("Invio DM Discord fallito per user %s: HTTP %s", user_id, message_response.status_code)
-                return False
-            return True
-    except httpx.HTTPError:
-        log.exception("Errore di rete durante l'invio del DM di aggiornamento a user %s", user_id)
-        return False
+    return await send_discord_dm(user_id=user_id, payload=payload)

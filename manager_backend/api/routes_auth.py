@@ -5,6 +5,7 @@ Endpoint di autenticazione OAuth2 Discord e gestione della sessione.
 from __future__ import annotations
 
 import logging
+import time
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from manager_backend.audit import audit_logger
@@ -23,6 +24,12 @@ from manager_backend.security.dependencies import (
 )
 from manager_backend.services.update_notification_service import send_required_update_dm
 from manager_backend.services.version_service import get_policy, is_supported
+from manager_backend.services.manager_security_service import claim_first_login, is_locked
+from manager_backend.services.manager_notification_service import (
+    send_login_dm,
+    send_logout_dm,
+    send_first_login_dm,
+)
 
 log = logging.getLogger("ezticket.manager.routes_auth")
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -52,6 +59,16 @@ async def exchange_oauth_code(
         global_name = user_profile.get("global_name")
         avatar = user_profile.get("avatar")
 
+        if is_locked(user_id):
+            audit_logger.record(
+                "MANAGER_LOCKOUT_BLOCKED",
+                user_id=user_id,
+                client_ip=client_ip,
+                success=False,
+                details={"action": "LOGIN"},
+            )
+            raise HTTPException(status_code=423, detail="Accesso temporaneamente bloccato. Riprova tra pochi minuti.")
+
         # 3. Recupero lista guild dell'utente per autorizzazione veloce
         user_guilds = await oauth_client.fetch_user_guilds(access_token)
 
@@ -64,6 +81,27 @@ async def exchange_oauth_code(
             discord_access_token=access_token,
             discord_guilds=user_guilds,
         )
+
+        first_login = claim_first_login(
+            user_id,
+            username=username,
+            global_name=global_name,
+            guild_id=(
+                str(user_guilds[0].get("id"))
+                if len(user_guilds) == 1 and isinstance(user_guilds[0], dict)
+                else None
+            ),
+        )
+        await send_login_dm(
+            user_id=user_id,
+            username=username,
+            global_name=global_name,
+            login_at=session.created_at,
+        )
+        if first_login:
+            await send_first_login_dm(
+                user_id=user_id, username=username, global_name=global_name
+            )
 
         if not x_manager_version or not is_supported(x_manager_version):
             policy = get_policy()
@@ -81,7 +119,7 @@ async def exchange_oauth_code(
             user_id=user_id,
             client_ip=client_ip,
             success=True,
-            details={"username": username},
+            details={"username": username, "global_name": global_name},
         )
 
         return AuthSessionResponse(
@@ -124,12 +162,26 @@ async def logout(
     """Invalida immediatamente la sessione attiva."""
     client_ip = get_client_ip(request)
     revoked = session_store.revoke_session(session.session_token)
+    logout_at = int(time.time())
+
+    await send_logout_dm(
+        user_id=session.user_id,
+        username=session.global_name or session.username,
+        login_at=session.created_at,
+        logout_at=logout_at,
+    )
 
     audit_logger.record(
         "LOGOUT",
         user_id=session.user_id,
         client_ip=client_ip,
         success=revoked,
+        details={
+            "username": session.username,
+            "global_name": session.global_name,
+            "login_at": session.created_at,
+            "logout_at": logout_at,
+        },
     )
     return LogoutResponse(
         success=revoked,

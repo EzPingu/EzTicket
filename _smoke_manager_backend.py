@@ -47,7 +47,7 @@ from manager_backend.audit import audit_logger
 from manager_backend.auth.session import session_store
 from manager_backend.config import backend_cfg
 
-client = TestClient(app, headers={"X-Manager-Version": "1.2.4"})
+client = TestClient(app, headers={"X-Manager-Version": "1.2.8"})
 
 # Helper per asserzioni
 def assert_eq(actual, expected, msg: str):

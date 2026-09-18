@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import threading
 from datetime import datetime, timezone
 
@@ -68,6 +69,8 @@ from candidature import (
 )
 from settings import backup_group, config_group, ezticket_group
 from manager_backend.services.version_service import get_policy
+from manager_backend.audit import audit_logger
+from manager_backend.services.manager_security_service import apply_lockout
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 log = logging.getLogger("ticketbot")
@@ -99,6 +102,76 @@ _background_tasks: set[asyncio.Task] = set()
 NOTIFY_PERMISSION_ROLE_ID = 1389309438053187664
 NOTIFY_DM_CONCURRENCY = 5
 _notify_dm_semaphore = asyncio.Semaphore(NOTIFY_DM_CONCURRENCY)
+
+
+class ManagerNotMeButton(discord.ui.DynamicItem[discord.ui.Button],
+                         template=r"manager_login_not_me:(?P<user_id>[0-9]+)"):
+    def __init__(self, user_id: int):
+        super().__init__(discord.ui.Button(
+            style=discord.ButtonStyle.danger, label="Non sono stato io",
+            custom_id=f"manager_login_not_me:{user_id}"))
+        self.user_id = int(user_id)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Questo avviso non appartiene al tuo account.", ephemeral=True)
+            return
+        audit_logger.record("MANAGER_LOCKOUT_REQUESTED", user_id=self.user_id, details={"source": "login_dm"})
+        embed = discord.Embed(
+            title="⚠️ Conferma sicurezza",
+            description="Vuoi terminare tutte le sessioni Manager e bloccare nuovi accessi per 5 minuti?",
+            color=discord.Color.red(),
+        )
+        await interaction.response.edit_message(
+            embed=embed,
+            view=ManagerLockoutConfirmView(self.user_id),
+        )
+
+
+class ManagerLockoutContinue(discord.ui.DynamicItem[discord.ui.Button],
+                             template=r"manager_lockout_continue:(?P<user_id>[0-9]+)"):
+    def __init__(self, user_id: int):
+        super().__init__(discord.ui.Button(style=discord.ButtonStyle.danger, label="Continua",
+                                           custom_id=f"manager_lockout_continue:{user_id}"))
+        self.user_id = int(user_id)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Azione non autorizzata.", ephemeral=True)
+            return
+        until = apply_lockout(self.user_id)
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="🔒 Sessioni terminate",
+                                description=f"Tutti gli accessi sono stati revocati. Nuovi accessi bloccati fino a <t:{until}:F>.",
+                                color=discord.Color.red()),
+            view=None,
+        )
+
+
+class ManagerLockoutCancel(discord.ui.DynamicItem[discord.ui.Button],
+                           template=r"manager_lockout_cancel:(?P<user_id>[0-9]+)"):
+    def __init__(self, user_id: int):
+        super().__init__(discord.ui.Button(style=discord.ButtonStyle.secondary, label="Annulla",
+                                           custom_id=f"manager_lockout_cancel:{user_id}"))
+        self.user_id = int(user_id)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Azione non autorizzata.", ephemeral=True)
+            return
+        audit_logger.record("MANAGER_LOCKOUT_CANCELLED", user_id=self.user_id, details={"source": "login_dm"})
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="✅ Operazione annullata",
+                                description="Nessun blocco è stato applicato.", color=discord.Color.green()),
+            view=None,
+        )
+
+
+class ManagerLockoutConfirmView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=300)
+        self.add_item(ManagerLockoutContinue(user_id))
+        self.add_item(ManagerLockoutCancel(user_id))
 
 
 def _spawn(coro) -> None:
@@ -152,6 +225,7 @@ class TicketBot(commands.AutoShardedBot):
         # l'ID della guild è codificato nel loro custom_id e viene risolto da questi
         # DynamicItem, così l'opt-out vale solo per il server che lo ha generato.
         self.add_dynamic_items(NotifyOptOutButton, NotifyOptInButton)
+        self.add_dynamic_items(ManagerNotMeButton, ManagerLockoutContinue, ManagerLockoutCancel)
 
         synced = await self.tree.sync()
         log.info("Sincronizzati %d comandi slash (globali).", len(synced))
