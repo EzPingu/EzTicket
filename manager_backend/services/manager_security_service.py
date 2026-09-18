@@ -44,6 +44,31 @@ def lockout_until(user_id: int) -> int | None:
     return until if until > int(time.time()) else None
 
 
+def get_active_lockouts() -> dict[int, int]:
+    _, lockouts = _state()
+    now = int(time.time())
+    return {
+        int(user_id): int(until)
+        for user_id, until in lockouts.items()
+        if int(float(until or 0)) > now
+    }
+
+
+def expire_lockout(user_id: int, until: int) -> bool:
+    _, lockouts = _state()
+    current = int(float(lockouts.get(str(user_id), 0) or 0))
+    if current != int(until) or current > int(time.time()):
+        return False
+    lockouts.pop(str(user_id), None)
+    cfg.mark_dirty("prefs")
+    audit_logger.record(
+        "MANAGER_LOCKOUT_EXPIRED",
+        user_id=user_id,
+        details={"duration_seconds": LOCKOUT_SECONDS},
+    )
+    return True
+
+
 def is_first_login(user_id: int) -> bool:
     first, _ = _state()
     return not bool(first.get(str(user_id)))

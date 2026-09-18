@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 
 import discord
@@ -71,6 +72,8 @@ from settings import backup_group, config_group, ezticket_group
 from manager_backend.services.version_service import get_policy
 from manager_backend.audit import audit_logger
 from manager_backend.services.manager_security_service import apply_lockout
+from manager_backend.services.manager_security_service import expire_lockout, get_active_lockouts
+from manager_backend.services.manager_notification_service import send_lockout_expired_dm
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 log = logging.getLogger("ticketbot")
@@ -126,13 +129,9 @@ class ManagerNotMeButton(discord.ui.DynamicItem[discord.ui.Button],
             await interaction.response.send_message("Questo avviso non appartiene al tuo account.", ephemeral=True)
             return
         audit_logger.record("MANAGER_LOCKOUT_REQUESTED", user_id=self.user_id, details={"source": "login_dm"})
-        embed = discord.Embed(
-            title="⚠️ Conferma sicurezza",
-            description="Vuoi terminare tutte le sessioni Manager e bloccare nuovi accessi per 5 minuti?",
-            color=discord.Color.red(),
-        )
         await interaction.response.edit_message(
-            embed=embed,
+            content=None,
+            embeds=[],
             view=ManagerLockoutConfirmView(self.user_id),
         )
 
@@ -144,16 +143,25 @@ class ManagerLockoutContinue(discord.ui.DynamicItem[discord.ui.Button],
                                            custom_id=f"manager_lockout_continue:{user_id}"))
         self.user_id = int(user_id)
 
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Button,
+        match: re.Match[str],
+    ) -> "ManagerLockoutContinue":
+        return cls(int(match.group("user_id")))
+
     async def callback(self, interaction: discord.Interaction) -> None:
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Azione non autorizzata.", ephemeral=True)
             return
         until = apply_lockout(self.user_id)
+        _schedule_lockout_expiration(self.user_id, until)
         await interaction.response.edit_message(
-            embed=discord.Embed(title="🔒 Sessioni terminate",
-                                description=f"Tutti gli accessi sono stati revocati. Nuovi accessi bloccati fino a <t:{until}:F>.",
-                                color=discord.Color.red()),
-            view=None,
+            content=None,
+            embeds=[],
+            view=ManagerLockoutAppliedView(until),
         )
 
 
@@ -163,6 +171,15 @@ class ManagerLockoutCancel(discord.ui.DynamicItem[discord.ui.Button],
         super().__init__(discord.ui.Button(style=discord.ButtonStyle.secondary, label="Annulla",
                                            custom_id=f"manager_lockout_cancel:{user_id}"))
         self.user_id = int(user_id)
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Button,
+        match: re.Match[str],
+    ) -> "ManagerLockoutCancel":
+        return cls(int(match.group("user_id")))
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if interaction.user.id != self.user_id:
@@ -176,11 +193,74 @@ class ManagerLockoutCancel(discord.ui.DynamicItem[discord.ui.Button],
         )
 
 
-class ManagerLockoutConfirmView(discord.ui.View):
+class ManagerLockoutConfirmView(discord.ui.LayoutView):
     def __init__(self, user_id: int):
         super().__init__(timeout=300)
-        self.add_item(ManagerLockoutContinue(user_id))
-        self.add_item(ManagerLockoutCancel(user_id))
+        self.add_item(discord.ui.Container(
+            discord.ui.TextDisplay(
+                "🚨 **Conferma blocco di sicurezza**\n\n"
+                "Stai per proteggere il tuo account EzTicket Manager."
+            ),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(
+                "🔒 Verranno terminate tutte le sessioni attive e i nuovi accessi "
+                "saranno bloccati per 5 minuti.\n\n"
+                "⏱️ Il blocco verrà rimosso automaticamente allo scadere dei 5 minuti, "
+                "ma potrai terminarlo manualmente in qualsiasi momento.\n\n"
+                "⚠️ Se non riconosci questo accesso, premi 🔴 Continua."
+            ),
+            discord.ui.Separator(),
+            discord.ui.ActionRow(
+                ManagerLockoutContinue(user_id),
+                ManagerLockoutCancel(user_id),
+            ),
+            accent_color=discord.Color.red(),
+        ))
+
+
+class ManagerLockoutAppliedView(discord.ui.LayoutView):
+    def __init__(self, until: int):
+        super().__init__(timeout=300)
+        self.add_item(discord.ui.Container(
+            discord.ui.TextDisplay(
+                f"🔒 **Sessioni terminate**\n\n"
+                f"Tutti gli accessi sono stati revocati. Nuovi accessi bloccati fino a <t:{until}:F>."
+            ),
+            accent_color=discord.Color.red(),
+        ))
+
+
+class ManagerLockoutExpiredView(discord.ui.LayoutView):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Container(
+            discord.ui.TextDisplay(
+                "🟢 **Blocco di sicurezza disattivato**\n\n"
+                "Il blocco è stato disattivato automaticamente poiché sono trascorsi "
+                "i 5 minuti previsti.\n\n"
+                "🔓 I nuovi accessi a EzTicket Manager sono nuovamente consentiti.\n\n"
+                "🛡️ La procedura di sicurezza è stata completata."
+            ),
+            accent_color=discord.Color.green(),
+        ))
+
+
+_lockout_expiration_tasks: dict[int, asyncio.Task] = {}
+
+
+def _schedule_lockout_expiration(user_id: int, until: int) -> None:
+    previous = _lockout_expiration_tasks.pop(user_id, None)
+    if previous is not None:
+        previous.cancel()
+    task = asyncio.create_task(_expire_lockout_after(user_id, until))
+    _lockout_expiration_tasks[user_id] = task
+    task.add_done_callback(lambda _: _lockout_expiration_tasks.pop(user_id, None))
+
+
+async def _expire_lockout_after(user_id: int, until: int) -> None:
+    await asyncio.sleep(max(0, until - int(time.time())))
+    if expire_lockout(user_id, until):
+        await send_lockout_expired_dm(user_id=user_id)
 
 
 def _spawn(coro) -> None:
@@ -235,6 +315,8 @@ class TicketBot(commands.AutoShardedBot):
         # DynamicItem, così l'opt-out vale solo per il server che lo ha generato.
         self.add_dynamic_items(NotifyOptOutButton, NotifyOptInButton)
         self.add_dynamic_items(ManagerNotMeButton, ManagerLockoutContinue, ManagerLockoutCancel)
+        for user_id, until in get_active_lockouts().items():
+            _schedule_lockout_expiration(user_id, until)
 
         synced = await self.tree.sync()
         log.info("Sincronizzati %d comandi slash (globali).", len(synced))
@@ -243,6 +325,9 @@ class TicketBot(commands.AutoShardedBot):
         """Spegnimento pulito: l'ultimo salvataggio in sospeso va scritto su disco
         prima di chiudere il loop, altrimenti il debounce lo perderebbe."""
         maintenance_loop.cancel()
+        for task in _lockout_expiration_tasks.values():
+            task.cancel()
+        _lockout_expiration_tasks.clear()
         if _presence_task is not None and not _presence_task.done():
             _presence_task.cancel()
         try:

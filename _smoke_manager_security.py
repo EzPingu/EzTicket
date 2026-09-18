@@ -56,6 +56,19 @@ def main() -> None:
     reconstructed = asyncio.run(bot_main.ManagerNotMeButton.from_custom_id(None, button.item, match))
     assert reconstructed.user_id == 123456789
     assert reconstructed.item.custom_id == "manager_login_not_me:123456789"
+    continue_button = bot_main.ManagerLockoutContinue(123456789)
+    continue_match = re.fullmatch(
+        r"manager_lockout_continue:(?P<user_id>[0-9]+)",
+        continue_button.item.custom_id,
+    )
+    assert continue_match is not None
+    reconstructed_continue = asyncio.run(
+        bot_main.ManagerLockoutContinue.from_custom_id(
+            None, continue_button.item, continue_match
+        )
+    )
+    assert reconstructed_continue.user_id == 123456789
+    assert reconstructed_continue.item.custom_id == "manager_lockout_continue:123456789"
     print("Manager security smoke: OK")
 
 
