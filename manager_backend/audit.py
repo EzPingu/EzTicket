@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import asyncio
+import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 import httpx
@@ -38,6 +39,8 @@ class AuditLogger:
     def __init__(self, max_in_memory: int = 1000) -> None:
         self._max = max_in_memory
         self._events: list[AuditEvent] = []
+        self._file_lock = threading.Lock()
+        self._events_lock = threading.RLock()
 
     def record(
         self,
@@ -63,9 +66,10 @@ class AuditLogger:
             success=success,
         )
 
-        self._events.append(event)
-        if len(self._events) > self._max:
-            self._events.pop(0)
+        with self._events_lock:
+            self._events.append(event)
+            if len(self._events) > self._max:
+                self._events.pop(0)
 
         log_level = logging.INFO if success else logging.WARNING
         log.log(
@@ -78,8 +82,19 @@ class AuditLogger:
             event.ip_hash,
             json.dumps(event.details),
         )
+        self._write_durable(event)
         self._dispatch_webhook(event)
         return event
+
+    def _write_durable(self, event: AuditEvent) -> None:
+        path = backend_cfg.audit_log_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with self._file_lock:
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(event.to_dict(), ensure_ascii=True) + "\n")
+        except OSError as exc:
+            log.warning("Scrittura audit persistente fallita: %s", exc)
 
     @classmethod
     def _sanitize(cls, value: Any, key: str = "") -> Any:
@@ -126,6 +141,9 @@ class AuditLogger:
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
                 response = await client.post(backend_cfg.audit_webhook_url, json=payload)
+                if response.status_code == 429:
+                    log.warning("Audit webhook rate limited: status=429")
+                    return
                 response.raise_for_status()
         except (httpx.HTTPError, ValueError) as exc:
             log.warning("Invio audit webhook fallito: %s", exc)
@@ -143,7 +161,8 @@ class AuditLogger:
         user_id: int | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        filtered = self._events
+        with self._events_lock:
+            filtered = list(self._events)
         if guild_id is not None:
             filtered = [e for e in filtered if e.guild_id == str(guild_id)]
         if user_id is not None:

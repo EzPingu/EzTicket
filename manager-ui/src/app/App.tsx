@@ -64,7 +64,7 @@ function AuthenticatedApp() {
   };
 
   if (status === "loading") return <div className="full-state"><span className="button-spinner" />Avvio di EzTicket Manager...</div>;
-  if (status === "version_blocked") return <VersionBlockedScreen minimumVersion={minimumVersion} />;
+  if (status === "version_blocked") return <VersionBlockedScreen minimumVersion={minimumVersion} onLogout={logout} />;
   if (status === "version_unavailable") return <VersionUnavailableScreen message={error} />;
   if (status === "anonymous") return <LoginScreen />;
   if (selectionLoading) return <div className="full-state"><span className="button-spinner" />Caricamento del server...</div>;
@@ -77,7 +77,7 @@ function AuthenticatedApp() {
   </Layout>;
 }
 
-function VersionBlockedScreen({ minimumVersion }: { minimumVersion: string | null }) {
+function VersionBlockedScreen({ minimumVersion, onLogout }: { minimumVersion: string | null; onLogout: () => Promise<void> }) {
   return <main className="update-screen" role="dialog" aria-modal="true">
     <section className="update-card">
       <span className="update-icon">⚠</span>
@@ -85,6 +85,7 @@ function VersionBlockedScreen({ minimumVersion }: { minimumVersion: string | nul
       <p>È disponibile un aggiornamento obbligatorio per continuare ad usare EzTicket Manager.</p>
       <p className="update-subtitle">Controlla i tuoi DM Discord per ricevere il link e le istruzioni per aggiornare.</p>
       {minimumVersion && <span className="update-status">Versione minima richiesta: v{minimumVersion}</span>}
+      <button className="secondary-button" onClick={() => void onLogout()}>Esci</button>
     </section>
   </main>;
 }

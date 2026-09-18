@@ -26,6 +26,19 @@ class DiscordOAuthError(Exception):
         self.details = details
 
 
+def _retry_after_seconds(response: httpx.Response) -> int | None:
+    value = response.headers.get("Retry-After", "").strip()
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    if seconds < 0:
+        return None
+    return max(1, int(seconds + 0.999))
+
+
 class DiscordOAuthClient:
     """Client per la comunicazione con gli endpoint OAuth2 di Discord."""
 
@@ -61,12 +74,43 @@ class DiscordOAuthClient:
         should_close = self._http is None
         try:
             resp = await client.post(TOKEN_ENDPOINT, data=data, headers=headers)
+            if resp.status_code == 429:
+                retry_after = _retry_after_seconds(resp)
+                log.warning(
+                    "Discord OAuth token exchange rate limited: status=429 retry_after=%s",
+                    retry_after if retry_after is not None else "<missing>",
+                )
+                message = "Discord è temporaneamente non disponibile. Riprova più tardi."
+                if retry_after is not None:
+                    message = f"Discord è temporaneamente non disponibile. Riprova tra {retry_after} secondi."
+                raise DiscordOAuthError(
+                    message,
+                    status_code=429,
+                    details={"retry_after": retry_after},
+                )
             if resp.status_code != 200:
-                log.warning("Errore scambio OAuth Discord (status %d): %s", resp.status_code, resp.text)
+                error = None
+                error_description = None
+                try:
+                    error_payload = resp.json()
+                except ValueError:
+                    error_payload = {}
+                if isinstance(error_payload, dict):
+                    error = error_payload.get("error")
+                    error_description = error_payload.get("error_description")
+                log.warning(
+                    "Discord OAuth token exchange failed: status=%d error=%s description=%s",
+                    resp.status_code,
+                    error or "<missing>",
+                    error_description or "<missing>",
+                )
                 raise DiscordOAuthError(
                     "Autenticazione Discord fallita: codice o verifier non valido",
                     status_code=400,
-                    details=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text,
+                    details={
+                        "error": error,
+                        "error_description": error_description,
+                    },
                 )
             return resp.json()
         except httpx.RequestError as exc:

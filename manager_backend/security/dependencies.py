@@ -10,6 +10,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from config import is_bot_operator
 from manager_backend.audit import audit_logger
 from manager_backend.auth.session import SessionData, session_store
+from manager_backend.config import backend_cfg
 from manager_backend.models.schemas import UserProfileResponse
 from manager_backend.services.guild_service import GuildAccessInfo, guild_service
 from manager_backend.services.version_service import is_supported
@@ -19,10 +20,13 @@ from manager_backend.services.version_service import get_policy
 
 def get_client_ip(request: Request) -> str:
     """Estrae in modo sicuro l'indirizzo IP del client per il logging."""
+    peer_ip = request.client.host if request.client else "127.0.0.1"
+    if peer_ip not in backend_cfg.trusted_proxy_ips:
+        return peer_ip
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "127.0.0.1"
+    return peer_ip
 
 
 async def get_current_session(

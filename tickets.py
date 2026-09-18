@@ -17,6 +17,7 @@ import re
 from datetime import datetime, timezone
 
 import discord
+from components_v2 import render_components_v2
 from discord import app_commands
 
 from config import (
@@ -388,7 +389,7 @@ class AddUserSelectView(discord.ui.View):
             description=f"✅ {member.mention} è stato aggiunto al ticket da {interaction.user.mention}.",
             color=discord.Color.green(),
         )
-        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        await interaction.response.edit_message(content=None, view=render_components_v2(embed, None))
 
 
 # ---------------------------------------------------------------------------
@@ -492,10 +493,10 @@ async def handle_risponditicket(interaction: discord.Interaction, utente: discor
     )
     embed.add_field(name="✉️ Inviato da", value=interaction.user.mention, inline=True)
     embed.add_field(name="📍 Ticket", value=interaction.channel.mention, inline=True)
-    await interaction.response.send_message(content=utente.mention, embed=embed)
+    await interaction.response.send_message(content=utente.mention, view=render_components_v2(embed))
 
     try:
-        await utente.send(embed=embed)
+        await utente.send(view=render_components_v2(embed))
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -606,7 +607,7 @@ async def send_transcript(guild: discord.Guild, channel: discord.TextChannel, ti
 
     async def _deliver(target) -> str | None:
         try:
-            await target.send(embed=embed)
+            await target.send(view=render_components_v2(embed))
             transcript_message = await target.send(
                 content="📄 Trascrizione completa del ticket:",
                 file=discord.File(fp=io.BytesIO(txt_bytes), filename=txt_filename),
@@ -740,7 +741,12 @@ async def update_staff_panel_message(guild: discord.Guild, channel: discord.Text
         return
     try:
         msg = await channel.fetch_message(msg_id)
-        await msg.edit(embed=build_staff_panel_embed(guild, section, ticket))
+        await msg.edit(
+            view=render_components_v2(
+                build_staff_panel_embed(guild, section, ticket),
+                TicketControlView(),
+            )
+        )
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         pass
 
@@ -759,7 +765,7 @@ async def log_to_ticket_channel(guild: discord.Guild, embed: discord.Embed) -> N
     channel = guild.get_channel(channel_id)
     if isinstance(channel, discord.TextChannel):
         try:
-            await channel.send(embed=embed)
+            await channel.send(view=render_components_v2(embed))
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -820,7 +826,7 @@ async def run_sla_check(guild_id: int, channel_id: int) -> None:
     role_mention = f"<@&{role_id}>" if role_id else None
     try:
         await destinazione.send(
-            content=role_mention, embed=embed, view=None if fallback else link_view,
+            content=role_mention, view=render_components_v2(embed, None) if fallback else link_view,
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
     except discord.HTTPException:
@@ -896,7 +902,7 @@ async def run_claim_check(guild_id: int, channel_id: int, staffer_id: int) -> No
         timestamp=datetime.now(timezone.utc),
     )
     try:
-        await channel.send(embed=embed)
+        await channel.send(view=render_components_v2(embed))
     except discord.HTTPException:
         pass
 
@@ -956,7 +962,7 @@ async def _reject_dead_dm_button(interaction: discord.Interaction, azione: str) 
         return
     try:
         await interaction.followup.send(
-            embed=discord.Embed(
+            view=render_components_v2(discord.Embed(
                 title="ℹ️ Server non più disponibile",
                 description=(
                     f"Non posso {azione} per quel server: non ne faccio più parte, "
@@ -964,7 +970,7 @@ async def _reject_dead_dm_button(interaction: discord.Interaction, azione: str) 
                     f"Le tue preferenze negli altri server non sono state toccate."
                 ),
                 color=discord.Color.greyple(),
-            )
+            ))
         )
     except discord.HTTPException:
         pass
@@ -1001,7 +1007,7 @@ class NotifyOptOutButton(discord.ui.DynamicItem[discord.ui.Button], template=r"t
 
         await interaction.response.edit_message(view=TicketNotifyOptOutView(self.guild_id, done=True))
         await interaction.followup.send(
-            embed=discord.Embed(
+            view=render_components_v2(discord.Embed(
                 title="👋 Fatto, avvisi disattivati",
                 description=(
                     f"Non riceverai più i DM per i nuovi ticket di **{nome_server}**.\n"
@@ -1009,8 +1015,7 @@ class NotifyOptOutButton(discord.ui.DynamicItem[discord.ui.Button], template=r"t
                     f"Se cambi idea, usa il pulsante qui sotto."
                 ),
                 color=discord.Color.orange(),
-            ),
-            view=TicketNotifyOptInView(self.guild_id),
+            ), TicketNotifyOptInView(self.guild_id)),
         )
         await log_notify_change(guild, interaction.user, opted_out=True)
 
@@ -1046,11 +1051,11 @@ class NotifyOptInButton(discord.ui.DynamicItem[discord.ui.Button], template=r"tn
 
         await interaction.response.edit_message(view=TicketNotifyOptInView(self.guild_id, done=True))
         await interaction.followup.send(
-            embed=discord.Embed(
+            view=render_components_v2(discord.Embed(
                 title="🔔 Bentornato tra gli avvisi!",
                 description=f"Riceverai di nuovo un DM per ogni nuovo ticket di **{nome_server}**. ✅",
                 color=discord.Color.green(),
-            )
+            ))
         )
         await log_notify_change(guild, interaction.user, opted_out=False)
 
@@ -1128,7 +1133,7 @@ async def notify_staff_new_ticket(guild: discord.Guild, opener: discord.Member, 
     async def _dm(member: discord.Member) -> None:
         async with _dm_semaphore:
             try:
-                await member.send(embed=embed, view=view)
+                await member.send(view=render_components_v2(embed, view))
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
@@ -1232,7 +1237,7 @@ class TicketControlView(discord.ui.View):
         section = gconf["sections"].get(ticket.get("section"), {})
         claimed, _ = await toggle_claim(interaction.guild, interaction.channel, gconf, ticket, section, interaction.user)
         embed = build_staff_panel_embed(interaction.guild, section, ticket)
-        await interaction.response.edit_message(embed=embed)
+        await interaction.response.edit_message(view=render_components_v2(embed, TicketControlView()))
 
         if claimed:
             await interaction.followup.send(
@@ -1402,7 +1407,7 @@ async def create_ticket_channel(
     member_embed = build_member_welcome_embed(section, opener, number, motivo)
     await channel.send(
         content=opener.mention,
-        embed=member_embed,
+        view=render_components_v2(member_embed),
         allowed_mentions=discord.AllowedMentions(users=True),
     )
 
@@ -1414,8 +1419,7 @@ async def create_ticket_channel(
             mentions.append(configured_role.mention)
     staff_msg = await channel.send(
         content=" ".join(mentions) or None,
-        embed=staff_embed,
-        view=TicketControlView(),
+        view=render_components_v2(staff_embed, TicketControlView()),
         allowed_mentions=discord.AllowedMentions(roles=True),
     )
     ticket["staff_message_id"] = staff_msg.id
@@ -1487,6 +1491,8 @@ async def close_ticket(
         duration = (closed_at - opened_at) if opened_at else None
 
         transcript_sent = False
+        history_capture_failed = False
+        history_capture_error = None
         channel_name = channel.name if (channel and hasattr(channel, "name")) else str(cid)
         history_messages: list[dict] = []
         if channel and isinstance(channel, discord.TextChannel):
@@ -1497,8 +1503,10 @@ async def close_ticket(
                     for message in messages
                     if message.content or message.attachments or message.embeds
                 ]
-            except (discord.Forbidden, discord.HTTPException):
+            except (discord.Forbidden, discord.HTTPException) as exc:
                 history_messages = []
+                history_capture_failed = True
+                history_capture_error = type(exc).__name__
 
         # 4. Transcript sicuro con gestione eccezioni (non blocca la chiusura)
         if guild and channel and (isinstance(channel, discord.TextChannel) or hasattr(channel, "send")):
@@ -1527,6 +1535,8 @@ async def close_ticket(
             "closed_at": closed_at,
             "duration_seconds": duration,
             "transcript_sent": transcript_sent,
+            "history_capture_failed": history_capture_failed,
+            "history_capture_error": history_capture_error,
             "transcript_url": ticket.get("transcript_url"),
             "messages": history_messages,
             "rating": None,
@@ -1678,13 +1688,13 @@ async def publish_panel(
     if old_channel_id == target.id and old_message_id:
         try:
             message = await target.fetch_message(old_message_id)
-            await message.edit(embed=embed, view=view)
+            await message.edit(view=render_components_v2(embed, view))
             cfg.mark_dirty("config")
             return message, True
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass   # cancellato a mano o non più raggiungibile: ne inviamo uno nuovo
 
-    message = await target.send(embed=embed, view=view)
+    message = await target.send(view=render_components_v2(embed, view))
     panel["channel_id"] = target.id
     panel["message_id"] = message.id
     cfg.mark_dirty("config")
@@ -1707,7 +1717,7 @@ async def refresh_panel(guild: discord.Guild, gconf: dict) -> bool:
     embed, view = _panel_payload(guild, gconf)
     try:
         message = await channel.fetch_message(message_id)
-        await message.edit(embed=embed, view=view)
+        await message.edit(view=render_components_v2(embed, view))
         return True
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         # Il messaggio non esiste più: dimentichiamo il riferimento (ma teniamo la
@@ -1878,7 +1888,7 @@ class TicketGroup(app_commands.Group):
                 inline=False,
             )
         embed.set_footer(text=branding_text(interaction.guild))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
     # ---- /ticket transcriptchannel ----
     @app_commands.command(name="transcriptchannel", description="[Admin server] Imposta il canale dove inviare i transcript")
@@ -1959,7 +1969,7 @@ class TicketGroup(app_commands.Group):
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_footer(text=f"Aggiunta da {interaction.user.display_name} · visibile solo allo staff/storico")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
     # ---- /ticket remove ----
     @app_commands.command(name="remove", description="Rimuovi un utente dal ticket corrente")

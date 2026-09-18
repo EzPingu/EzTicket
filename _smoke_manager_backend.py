@@ -15,7 +15,7 @@ Verifica:
 10. Dettaglio ticket autorizzato (GET /tickets/active/{channel_id})
 11. Ticket inesistente (404)
 12. Guild inesistente (404)
-13. Guild dove il bot non è più presente / left (404)
+13. Guild dove il bot non ÃƒÂ¨ piÃƒÂ¹ presente / left (404)
 14. IDOR Guild A -> Guild B su ticket list e ticket detail
 15. IDOR Channel A/B (combinazioni channel_id cross-guild)
 16. Claim autorizzato (POST /tickets/active/{channel_id}/claim)
@@ -24,7 +24,7 @@ Verifica:
 19. Close autorizzato con motivazione e salvataggio storico (POST /tickets/active/{channel_id}/close)
 20. Close non autorizzato (403)
 21. Doppio close e prevenzione race condition (nessun doppio transcript o doppio archivio)
-22. Ticket chiuso non più modificabile (404/400)
+22. Ticket chiuso non piÃƒÂ¹ modificabile (404/400)
 23. Nessun leak di dati tra guild diverse
 24. Tracciamento completo audit log (TICKET_VIEW, TICKET_CLAIM, TICKET_CLOSE, ACCESS_DENIED)
 """
@@ -135,7 +135,7 @@ def test_guild_authorization_and_idor_protection():
         "observed_owner_id": user_a_id,
         "branding": "Server Alpha",
         "left_at": None,
-        "sections": {"support": {"label": "Supporto", "emoji": "🎫"}},
+        "sections": {"support": {"label": "Supporto", "emoji": "Ã°Å¸Å½Â«"}},
         "tickets": {},
     }
     cfg.data[guild_b_id] = {
@@ -159,8 +159,7 @@ def test_guild_authorization_and_idor_protection():
         user_id=user_a_id,
         username="UserAlphaOwner",
     )
-    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}"}
-
+    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}" , "X-Manager-Version": "1.2.8"}
     # 4.1 /auth/me per User A
     resp = client.get("/api/v1/auth/me", headers=headers_a)
     assert_eq(resp.status_code, 200, "/auth/me User A -> 200")
@@ -252,8 +251,7 @@ def test_active_tickets_list_and_empty():
     }
 
     session_user_a = session_store.create_session(user_id=user_a_id, username="UserAlphaOwner")
-    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}"}
-
+    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}" , "X-Manager-Version": "1.2.8"}
     # 5.1 Lista ticket autorizzata in Guild A -> 2 ticket
     resp = client.get(f"/api/v1/guilds/{guild_a_id}/tickets/active", headers=headers_a)
     assert_eq(resp.status_code, 200, "Lista ticket attivi Guild A -> 200")
@@ -278,8 +276,7 @@ def test_active_ticket_detail():
     user_a_id = 1001
 
     session_user_a = session_store.create_session(user_id=user_a_id, username="UserAlphaOwner")
-    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}"}
-
+    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}" , "X-Manager-Version": "1.2.8"}
     # 6.1 Dettaglio valido ticket 10101
     resp = client.get(f"/api/v1/guilds/{guild_a_id}/tickets/active/10101", headers=headers_a)
     assert_eq(resp.status_code, 200, "Dettaglio ticket 10101 -> 200")
@@ -330,8 +327,7 @@ def test_cross_guild_ticket_idor():
     }
 
     session_user_a = session_store.create_session(user_id=user_a_id, username="UserAlphaOwner")
-    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}"}
-
+    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}" , "X-Manager-Version": "1.2.8"}
     # 7.1 Utente A prova a leggere i ticket di Guild B -> 403 Forbidden
     resp = client.get(f"/api/v1/guilds/{guild_b_id}/tickets/active", headers=headers_a)
     assert_eq(resp.status_code, 403, "User A legge ticket Guild B -> 403 Forbidden")
@@ -364,9 +360,9 @@ def test_claim_unclaim_and_concurrency():
     user_b_id = 2002
 
     session_user_a = session_store.create_session(user_id=user_a_id, username="UserAlphaOwner")
-    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}"}
+    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}" , "X-Manager-Version": "1.2.8"}
     session_user_b = session_store.create_session(user_id=user_b_id, username="UserBetaOwner")
-    headers_b = {"Authorization": f"Bearer {session_user_b.session_token}"}
+    headers_b = {"Authorization": f"Bearer {session_user_b.session_token}", "X-Manager-Version": "1.2.8"}
 
     # 8.1 Claim non autorizzato (User B su Guild A) -> 403 Forbidden
     resp = client.post(f"/api/v1/guilds/{guild_a_id}/tickets/active/10101/claim", headers=headers_b)
@@ -376,7 +372,7 @@ def test_claim_unclaim_and_concurrency():
     resp = client.post(f"/api/v1/guilds/{guild_a_id}/tickets/active/10101/claim", headers=headers_a)
     assert_eq(resp.status_code, 200, "Claim autorizzato -> 200 OK")
     data = resp.json()
-    assert_true(data.get("claimed"), "Ticket marcato come claimed=True")
+    assert_true(data.get("claimed"), "Ticket marcato como claimed=True")
     assert_eq(data.get("claimed_by"), str(user_a_id), "Claimed by User A")
 
     # Verifica stato persistito in ConfigManager
@@ -404,9 +400,9 @@ def test_close_ticket_and_concurrency():
     user_b_id = 2002
 
     session_user_a = session_store.create_session(user_id=user_a_id, username="UserAlphaOwner")
-    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}"}
+    headers_a = {"Authorization": f"Bearer {session_user_a.session_token}" , "X-Manager-Version": "1.2.8"}
     session_user_b = session_store.create_session(user_id=user_b_id, username="UserBetaOwner")
-    headers_b = {"Authorization": f"Bearer {session_user_b.session_token}"}
+    headers_b = {"Authorization": f"Bearer {session_user_b.session_token}", "X-Manager-Version": "1.2.8"}
 
     # 9.1 Close non autorizzato (User B su Guild A) -> 403 Forbidden
     resp = client.post(f"/api/v1/guilds/{guild_a_id}/tickets/active/10101/close", headers=headers_b)
@@ -434,9 +430,9 @@ def test_close_ticket_and_concurrency():
     assert_eq(last_history["closed_by"], user_a_id, "Closed_by archiviato corretto")
     assert_eq(last_history["close_reason"], "Problema risolto con successo", "Close reason archiviato")
 
-    # 9.5 Doppio Close sullo stesso ticket -> 404 Not Found (non più attivo)
+    # 9.5 Doppio Close sullo stesso ticket -> 404 Not Found (non piÃƒÂ¹ attivo)
     resp = client.post(f"/api/v1/guilds/{guild_a_id}/tickets/active/10101/close", headers=headers_a, json=close_payload)
-    assert_eq(resp.status_code, 404, "Doppio close su ticket già chiuso -> 404 Not Found")
+    assert_eq(resp.status_code, 404, "Doppio close su ticket giÃƒÂ  chiuso -> 404 Not Found")
 
     # 9.6 Operazioni successive su ticket chiuso -> 404 Not Found
     resp = client.get(f"/api/v1/guilds/{guild_a_id}/tickets/active/10101", headers=headers_a)
@@ -457,8 +453,7 @@ def test_unified_closing_concurrency_and_race_conditions():
     user_b = 2002
 
     session_a = session_store.create_session(user_id=user_a, username="UserAlpha")
-    headers_a = {"Authorization": f"Bearer {session_a.session_token}"}
-
+    headers_a = {"Authorization": f"Bearer {session_a.session_token}" , "X-Manager-Version": "1.2.8"}
     # Setup ticket concorrenza
     now = int(time.time())
     cfg.data[guild_a]["tickets"]["30301"] = {
@@ -559,7 +554,7 @@ def test_unified_closing_concurrency_and_race_conditions():
     # 10.3 Verifica che lo storico sia stato incrementato esattamente di 1
     assert_eq(cfg.history_count(guild_a), history_before + 1, "Storico incrementato esattamente di 1")
 
-    # 10.4 Verifica che il ticket non sia più presente negli attivi
+    # 10.4 Verifica che il ticket non sia piÃƒÂ¹ presente negli attivi
     assert_true("30301" not in cfg.peek(guild_a)["tickets"], "Ticket 30301 rimosso dagli attivi")
 
     # Ripristino mock transcript
@@ -607,8 +602,8 @@ def test_unified_closing_concurrency_and_race_conditions():
     assert_eq(resp_close_a.status_code, 200, "Ticket 77777 di Guild A chiuso con successo")
 
     # Il ticket 77777 di Guild B deve restare PERFETTAMENTE APERTO E INALTERATO
-    assert_true(same_cid in cfg.peek(guild_b)["tickets"], "Ticket 77777 di Guild B è ancora attivo e intatto")
-    assert_eq(cfg.peek(guild_b)["tickets"][same_cid]["status"], "open", "Stato ticket Guild B è ancora 'open'")
+    assert_true(same_cid in cfg.peek(guild_b)["tickets"], "Ticket 77777 di Guild B ÃƒÂ¨ ancora attivo e intatto")
+    assert_eq(cfg.peek(guild_b)["tickets"][same_cid]["status"], "open", "Stato ticket Guild B ÃƒÂ¨ ancora 'open'")
 
 
 
@@ -651,7 +646,7 @@ def test_no_secrets_in_responses_and_audit():
     assert_true("TICKET_CLOSE" in event_types, "Audit include TICKET_CLOSE")
     assert_true("IDOR_ATTEMPT" in event_types or "ACCESS_DENIED" in event_types, "Audit include ACCESS_DENIED / IDOR_ATTEMPT")
 
-    # Verifica integrità dei campi audit
+    # Verifica integritÃƒÂ  dei campi audit
     close_event = next(e for e in events if e.event_type == "TICKET_CLOSE")
     assert_true(close_event.timestamp > 0, "Timestamp presente")
     assert_eq(close_event.guild_id, "111111111111111111", "Guild ID corretto")
@@ -663,18 +658,32 @@ def main():
     print("==================================================")
     print("  AVVIO SMOKE SUITE EZTICKET MANAGER BACKEND")
     print("==================================================")
-    test_health()
-    test_unauthenticated_requests()
-    test_invalid_and_expired_session()
-    test_guild_authorization_and_idor_protection()
-    test_active_tickets_list_and_empty()
-    test_active_ticket_detail()
-    test_cross_guild_ticket_idor()
-    test_claim_unclaim_and_concurrency()
-    test_close_ticket_and_concurrency()
-    test_unified_closing_concurrency_and_race_conditions()
-    test_logout_and_revocation()
-    test_no_secrets_in_responses_and_audit()
+    import manager_backend.services.ticket_service as ticket_service
+    import tickets
+
+    async def run_core_on_test_loop(coro):
+        return await coro
+
+    original_service_bridge = ticket_service.run_on_discord_loop
+    original_tickets_bridge = tickets.run_on_discord_loop
+    ticket_service.run_on_discord_loop = run_core_on_test_loop
+    tickets.run_on_discord_loop = run_core_on_test_loop
+    try:
+        test_health()
+        test_unauthenticated_requests()
+        test_invalid_and_expired_session()
+        test_guild_authorization_and_idor_protection()
+        test_active_tickets_list_and_empty()
+        test_active_ticket_detail()
+        test_cross_guild_ticket_idor()
+        test_claim_unclaim_and_concurrency()
+        test_close_ticket_and_concurrency()
+        test_unified_closing_concurrency_and_race_conditions()
+        test_logout_and_revocation()
+        test_no_secrets_in_responses_and_audit()
+    finally:
+        ticket_service.run_on_discord_loop = original_service_bridge
+        tickets.run_on_discord_loop = original_tickets_bridge
     print("==================================================")
     print("  TUTTI I TEST DEL BACKEND PASSATI CON SUCCESSO!  ")
     print("==================================================")

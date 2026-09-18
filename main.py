@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timezone
 
 import discord
+from components_v2 import render_components_v2
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -37,6 +38,7 @@ from config import (
     branding_text,
     claim_timeout_seconds,
     get_bot_operator_ids,
+    is_bot_operator,
     inactivity_hours,
     is_staff_member,
     sla_seconds,
@@ -71,9 +73,17 @@ from candidature import (
 from settings import backup_group, config_group, ezticket_group
 from manager_backend.services.version_service import get_policy
 from manager_backend.audit import audit_logger
-from manager_backend.services.manager_security_service import apply_lockout
-from manager_backend.services.manager_security_service import expire_lockout, get_active_lockouts
-from manager_backend.services.manager_notification_service import send_lockout_expired_dm
+from manager_backend.services.manager_security_service import (
+    LOCKOUT_SECONDS,
+    apply_lockout,
+    end_lockout_early,
+    expire_lockout,
+    get_active_lockouts,
+)
+from manager_backend.services.manager_notification_service import (
+    send_lockout_expired_dm,
+    send_lockout_removed_dm,
+)
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 log = logging.getLogger("ticketbot")
@@ -187,15 +197,18 @@ class ManagerLockoutCancel(discord.ui.DynamicItem[discord.ui.Button],
             return
         audit_logger.record("MANAGER_LOCKOUT_CANCELLED", user_id=self.user_id, details={"source": "login_dm"})
         await interaction.response.edit_message(
-            embed=discord.Embed(title="✅ Operazione annullata",
-                                description="Nessun blocco è stato applicato.", color=discord.Color.green()),
+            embed=discord.Embed(
+                title="✅ Operazione annullata",
+                description="Nessun blocco è stato applicato.",
+                color=discord.Color.green(),
+            ),
             view=None,
         )
 
 
 class ManagerLockoutConfirmView(discord.ui.LayoutView):
     def __init__(self, user_id: int):
-        super().__init__(timeout=300)
+        super().__init__(timeout=LOCKOUT_SECONDS)
         self.add_item(discord.ui.Container(
             discord.ui.TextDisplay(
                 "🚨 **Conferma blocco di sicurezza**\n\n"
@@ -204,8 +217,8 @@ class ManagerLockoutConfirmView(discord.ui.LayoutView):
             discord.ui.Separator(),
             discord.ui.TextDisplay(
                 "🔒 Verranno terminate tutte le sessioni attive e i nuovi accessi "
-                "saranno bloccati per 5 minuti.\n\n"
-                "⏱️ Il blocco verrà rimosso automaticamente allo scadere dei 5 minuti, "
+                f"saranno bloccati per {LOCKOUT_SECONDS // 60} minuti.\n\n"
+                f"⏱️ Il blocco verrà rimosso automaticamente allo scadere dei {LOCKOUT_SECONDS // 60} minuti, "
                 "ma potrai terminarlo manualmente in qualsiasi momento.\n\n"
                 "⚠️ Se non riconosci questo accesso, premi 🔴 Continua."
             ),
@@ -220,11 +233,12 @@ class ManagerLockoutConfirmView(discord.ui.LayoutView):
 
 class ManagerLockoutAppliedView(discord.ui.LayoutView):
     def __init__(self, until: int):
-        super().__init__(timeout=300)
+        super().__init__(timeout=LOCKOUT_SECONDS)
         self.add_item(discord.ui.Container(
             discord.ui.TextDisplay(
                 f"🔒 **Sessioni terminate**\n\n"
-                f"Tutti gli accessi sono stati revocati. Nuovi accessi bloccati fino a <t:{until}:F>."
+                f"Tutti gli accessi sono stati revocati. Nuovi accessi bloccati fino a <t:{until}:F>.\n\n"
+                "📩 Per richiedere la rimozione del blocco, contatta EzPingu."
             ),
             accent_color=discord.Color.red(),
         ))
@@ -237,7 +251,7 @@ class ManagerLockoutExpiredView(discord.ui.LayoutView):
             discord.ui.TextDisplay(
                 "🟢 **Blocco di sicurezza disattivato**\n\n"
                 "Il blocco è stato disattivato automaticamente poiché sono trascorsi "
-                "i 5 minuti previsti.\n\n"
+                f"i {LOCKOUT_SECONDS // 60} minuti previsti.\n\n"
                 "🔓 I nuovi accessi a EzTicket Manager sono nuovamente consentiti.\n\n"
                 "🛡️ La procedura di sicurezza è stata completata."
             ),
@@ -261,6 +275,61 @@ async def _expire_lockout_after(user_id: int, until: int) -> None:
     await asyncio.sleep(max(0, until - int(time.time())))
     if expire_lockout(user_id, until):
         await send_lockout_expired_dm(user_id=user_id)
+
+
+manager_unblock_group = app_commands.Group(
+    name="manager-unblock",
+    description="Gestione dei blocchi di sicurezza del Manager",
+)
+
+
+@manager_unblock_group.command(name="user", description="Rimuove il blocco di sicurezza di un utente")
+@app_commands.describe(utente="Utente da sbloccare")
+@app_commands.guild_only()
+async def manager_unblock_user(
+    interaction: discord.Interaction,
+    utente: discord.User,
+) -> None:
+    if not is_bot_operator(interaction.user):
+        await interaction.response.send_message(
+            "🚫 Devi essere un operatore autorizzato del bot per rimuovere un blocco globale.",
+            ephemeral=True,
+        )
+        return
+
+    if not end_lockout_early(utente.id):
+        await interaction.response.send_message(
+            "ℹ️ L'utente non ha un blocco di sicurezza attivo.",
+            ephemeral=True,
+        )
+        return
+
+    audit_logger.record(
+        "MANAGER_LOCKOUT_MANUALLY_REMOVED",
+        user_id=utente.id,
+        guild_id=interaction.guild_id,
+        details={
+            "source": "manager_unblock_user",
+            "actor_user_id": interaction.user.id,
+        },
+    )
+    dm_sent = await send_lockout_removed_dm(user_id=utente.id)
+    if not dm_sent:
+        audit_logger.record(
+            "MANAGER_LOCKOUT_REMOVAL_DM_FAILED",
+            user_id=utente.id,
+            guild_id=interaction.guild_id,
+            success=False,
+            details={
+                "source": "manager_unblock_user",
+                "actor_user_id": interaction.user.id,
+            },
+        )
+    await interaction.response.send_message(
+        "✅ Blocco di sicurezza rimosso. "
+        + ("Ho inviato una notifica DM all'utente." if dm_sent else "Non è stato possibile inviare il DM all'utente."),
+        ephemeral=True,
+    )
 
 
 def _spawn(coro) -> None:
@@ -305,6 +374,7 @@ class TicketBot(commands.AutoShardedBot):
         self.tree.add_command(config_group)
         self.tree.add_command(backup_group)
         self.tree.add_command(ezticket_group)
+        self.tree.add_command(manager_unblock_group)
 
         # view persistenti: i bottoni/select continuano a funzionare dopo un riavvio
         self.add_view(TicketPanelView())
@@ -344,6 +414,8 @@ bot = TicketBot()
 def start_manager_api():
     import uvicorn
 
+    # The session store is process-local; the Manager API is intentionally
+    # started with one worker so every request sees the same session state.
     uvicorn.run(
         "manager_backend.app:app",
         host="0.0.0.0",
@@ -602,9 +674,9 @@ async def send_setup_message(guild: discord.Guild) -> None:
 
     for channel in candidati:
         perms = channel.permissions_for(guild.me)
-        if perms.send_messages and perms.embed_links:
+        if perms.send_messages:
             try:
-                await channel.send(embed=embed)
+                await channel.send(view=render_components_v2(embed))
                 return
             except (discord.Forbidden, discord.HTTPException):
                 continue
@@ -612,7 +684,7 @@ async def send_setup_message(guild: discord.Guild) -> None:
     owner = guild.owner
     if owner is not None:
         try:
-            await owner.send(embed=embed)
+            await owner.send(view=render_components_v2(embed))
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -890,7 +962,7 @@ async def notify(
             member_view = _notify_view(preset.value)
             for attempt in range(2):
                 try:
-                    await member.send(embed=member_embed, view=member_view)
+                    await member.send(view=render_components_v2(member_embed, member_view))
                     return True
                 except discord.Forbidden:
                     log.info("DM /notify chiuso per %s in %s.", member.id, guild.id)
@@ -927,7 +999,7 @@ async def notify(
             inline=False,
         )
         confirmation.set_footer(text="By EzPingu")
-        await interaction.followup.send(embed=confirmation, ephemeral=True)
+        await interaction.followup.send(view=render_components_v2(confirmation), ephemeral=True)
 
 
 @bot.tree.command(name="candidaturestaffcanale", description="[Admin server] Canale dove arrivano le candidature staff completate")
@@ -1039,7 +1111,7 @@ async def help_command(interaction: discord.Interaction):
         inline=False,
     )
     embed.set_footer(text=branding_text(guild))
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
 
 @bot.tree.error

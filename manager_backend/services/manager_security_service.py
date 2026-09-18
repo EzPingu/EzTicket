@@ -11,8 +11,9 @@ from manager_backend.auth.session import session_store
 
 FIRST_LOGIN_KEY = "manager_first_login_users"
 LOCKOUT_KEY = "manager_lockouts"
-LOCKOUT_SECONDS = 300
+LOCKOUT_SECONDS = 600
 _first_login_lock = threading.Lock()
+_lockout_lock = threading.RLock()
 
 
 def _state() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -28,39 +29,43 @@ def _state() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def is_locked(user_id: int) -> bool:
-    _, lockouts = _state()
-    until = float(lockouts.get(str(user_id), 0) or 0)
-    if until <= time.time():
-        if str(user_id) in lockouts:
-            lockouts.pop(str(user_id), None)
-            cfg.mark_dirty("prefs")
-        return False
-    return True
+    with _lockout_lock:
+        _, lockouts = _state()
+        until = float(lockouts.get(str(user_id), 0) or 0)
+        if until <= time.time():
+            if str(user_id) in lockouts:
+                lockouts.pop(str(user_id), None)
+                cfg.mark_dirty("prefs")
+            return False
+        return True
 
 
 def lockout_until(user_id: int) -> int | None:
-    _, lockouts = _state()
-    until = int(float(lockouts.get(str(user_id), 0) or 0))
-    return until if until > int(time.time()) else None
+    with _lockout_lock:
+        _, lockouts = _state()
+        until = int(float(lockouts.get(str(user_id), 0) or 0))
+        return until if until > int(time.time()) else None
 
 
 def get_active_lockouts() -> dict[int, int]:
-    _, lockouts = _state()
-    now = int(time.time())
-    return {
-        int(user_id): int(until)
-        for user_id, until in lockouts.items()
-        if int(float(until or 0)) > now
-    }
+    with _lockout_lock:
+        _, lockouts = _state()
+        now = int(time.time())
+        return {
+            int(user_id): int(until)
+            for user_id, until in lockouts.items()
+            if int(float(until or 0)) > now
+        }
 
 
 def expire_lockout(user_id: int, until: int) -> bool:
-    _, lockouts = _state()
-    current = int(float(lockouts.get(str(user_id), 0) or 0))
-    if current != int(until) or current > int(time.time()):
-        return False
-    lockouts.pop(str(user_id), None)
-    cfg.mark_dirty("prefs")
+    with _lockout_lock:
+        _, lockouts = _state()
+        current = int(float(lockouts.get(str(user_id), 0) or 0))
+        if current != int(until) or current > int(time.time()):
+            return False
+        lockouts.pop(str(user_id), None)
+        cfg.mark_dirty("prefs")
     audit_logger.record(
         "MANAGER_LOCKOUT_EXPIRED",
         user_id=user_id,
@@ -115,11 +120,12 @@ def claim_first_login(
 
 
 def apply_lockout(user_id: int, *, client_ip: str | None = None) -> int:
-    until = int(time.time()) + LOCKOUT_SECONDS
-    _, lockouts = _state()
-    lockouts[str(user_id)] = until
-    revoked = session_store.revoke_user_sessions(user_id)
-    cfg.mark_dirty("prefs")
+    with _lockout_lock:
+        until = int(time.time()) + LOCKOUT_SECONDS
+        _, lockouts = _state()
+        lockouts[str(user_id)] = until
+        revoked = session_store.revoke_user_sessions(user_id)
+        cfg.mark_dirty("prefs")
     audit_logger.record(
         "MANAGER_LOCKOUT_APPLIED",
         user_id=user_id,
@@ -130,11 +136,12 @@ def apply_lockout(user_id: int, *, client_ip: str | None = None) -> int:
 
 
 def cancel_lockout(user_id: int, *, client_ip: str | None = None) -> bool:
-    _, lockouts = _state()
-    existed = str(user_id) in lockouts
-    lockouts.pop(str(user_id), None)
-    if existed:
-        cfg.mark_dirty("prefs")
+    with _lockout_lock:
+        _, lockouts = _state()
+        existed = str(user_id) in lockouts
+        lockouts.pop(str(user_id), None)
+        if existed:
+            cfg.mark_dirty("prefs")
     audit_logger.record(
         "MANAGER_LOCKOUT_CANCELLED",
         user_id=user_id,

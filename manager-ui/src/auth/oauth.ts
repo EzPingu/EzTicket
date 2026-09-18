@@ -3,7 +3,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { exchangeOAuthCode } from "../api/auth.api";
 
 const clientId = import.meta.env.VITE_DISCORD_CLIENT_ID as string | undefined;
-const redirectUri = "http://127.0.0.1:8765/callback";
+const redirectUri =
+  (import.meta.env.VITE_DISCORD_REDIRECT_URI as string | undefined)?.trim()
+  || "http://127.0.0.1:8765/callback";
 
 function randomBase64Url(bytes: number) {
   const data = new Uint8Array(bytes);
@@ -44,11 +46,18 @@ export async function loginWithDiscord() {
   try {
     await openUrl(authorizationUrl);
   } catch (cause) {
+    await invoke("cancel_oauth_callback").catch(() => undefined);
     const detail = safeOpenUrlError(cause);
     console.error("Discord OAuth: openUrl() non ha aperto il browser.", detail);
     throw new Error(`Impossibile aprire il browser per Discord OAuth. ${detail}`);
   }
-  const callback = await invoke<{ code?: string; state?: string; error?: string }>("wait_oauth_callback");
+  let callback: { code?: string; state?: string; error?: string };
+  try {
+    callback = await invoke<{ code?: string; state?: string; error?: string }>("wait_oauth_callback");
+  } catch (cause) {
+    await invoke("cancel_oauth_callback").catch(() => undefined);
+    throw cause;
+  }
   if (callback.error) throw new Error("Discord ha annullato l'autenticazione.");
   if (!callback.code || callback.state !== state) throw new Error("La verifica di sicurezza OAuth non è riuscita.");
   return exchangeOAuthCode({ code: callback.code, code_verifier: verifier, redirect_uri: redirectUri });

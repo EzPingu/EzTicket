@@ -4,6 +4,7 @@ import logging
 import time
 from typing import Optional
 import discord
+from components_v2 import render_components_v2
 
 from config import cfg, fetch_member
 from discord_bridge import is_available, run_on_discord_loop
@@ -172,7 +173,7 @@ class ApplicationService:
             )
             embed.set_author(name=actor.display_name, icon_url=actor.display_avatar.url)
             try:
-                await member.send(embed=embed)
+                await member.send(view=render_components_v2(embed))
             except (discord.Forbidden, discord.HTTPException):
                 return False, actor.id, actor.display_name, str(actor.display_avatar.url)
             return True, actor.id, actor.display_name, str(actor.display_avatar.url)

@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timezone
 
 import discord
+from components_v2 import render_components_v2
 from discord import app_commands
 
 from config import (
@@ -162,7 +163,7 @@ class ConfigGroup(app_commands.Group):
         embed.set_footer(text=branding_text(guild))
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
     # -------------------------------------------------------------------- sla
     @app_commands.command(name="sla", description="[Admin server] Dopo quanti minuti avvisare che un ticket è senza risposta")
@@ -278,7 +279,7 @@ class ConfigGroup(app_commands.Group):
             color=discord.Color.blurple(),
         )
         embed.set_footer(text=branding_text(interaction.guild))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
     # ------------------------------------------------------------------ owner
     owner = app_commands.Group(name="owner", description="Amministratori del bot in questo server")
@@ -349,7 +350,7 @@ class ConfigGroup(app_commands.Group):
             color=discord.Color.gold(),
         )
         embed.set_footer(text=branding_text(guild))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
     # ----------------------------------------------------------- diagnostica
     @app_commands.command(name="diagnostica", description="[Host del bot] Stato tecnico aggregato dell'istanza")
@@ -416,7 +417,7 @@ class ConfigGroup(app_commands.Group):
         embed.set_footer(text="Default: SLA "
                               f"{DEFAULT_GUILD['sla_seconds'] // 60} min · claim "
                               f"{DEFAULT_GUILD['claim_timeout_seconds'] // 60} min")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
 
 class BackupGroup(app_commands.Group):
@@ -442,7 +443,7 @@ class BackupGroup(app_commands.Group):
             ),
             timestamp=datetime.now(timezone.utc),
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(view=render_components_v2(embed))
 
 
 config_group = ConfigGroup()

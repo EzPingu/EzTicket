@@ -23,6 +23,13 @@ def is_supported(version: str) -> bool:
         return False
 
 
+def is_update_available(installed_version: str, current_version: str) -> bool:
+    try:
+        return _version_tuple(installed_version) < _version_tuple(current_version)
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True)
 class VersionPolicy:
     current_version: str

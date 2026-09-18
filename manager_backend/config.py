@@ -35,6 +35,13 @@ class BackendConfig:
             if origin.strip()
         ]
     )
+    trusted_proxy_ips: set[str] = field(
+        default_factory=lambda: {
+            value.strip()
+            for value in os.getenv("TRUSTED_PROXY_IPS", "").split(",")
+            if value.strip()
+        }
+    )
 
     # --- Discord OAuth2 Credentials (Server-Side ONLY) ---
     discord_client_id: str = os.getenv("DISCORD_OAUTH_CLIENT_ID", "").strip()

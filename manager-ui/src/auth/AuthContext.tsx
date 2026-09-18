@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { getCurrentUser, logout as logoutApi } from "../api/auth.api";
 import { ApiError } from "../api/client";
 import { getGuilds } from "../api/guilds.api";
@@ -25,13 +25,14 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<AuthStatus>("loading");
+  const [status, setStatus] = useState<AuthStatus>("anonymous");
   const [user, setUser] = useState<UserProfile | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [guilds, setGuilds] = useState<GuildSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [minimumVersion, setMinimumVersion] = useState<string | null>(null);
+  const loginInFlight = useRef<Promise<void> | null>(null);
 
   const clearSession = useCallback(() => {
     setToken(null);
@@ -51,45 +52,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [clearSession, token]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setStatus("loading");
-    void checkManagerVersion().then((result) => {
-      if (cancelled) return;
-      if (result.state === "blocked") {
-        setMinimumVersion(result.policy.minimum_version);
-        // Discord OAuth is required so the backend can send the mandatory-update DM.
-        setStatus("anonymous");
-      } else if (result.state === "unavailable") {
-        setError(result.error.message);
-        setStatus("version_unavailable");
-      } else {
-        setStatus("anonymous");
-      }
-    });
-    return () => { cancelled = true; };
-  }, []);
+  const login = useCallback(() => {
+    if (loginInFlight.current) return loginInFlight.current;
+    const operation = (async () => {
+      setError(null);
+      try {
+        const session: AuthSession = await loginWithDiscord();
+        const profile = await getCurrentUser(session.session_token);
+        setToken(session.session_token);
+        setExpiresAt(session.expires_at);
+        setUser(profile);
+        setGuilds(await getGuilds(session.session_token));
+        setStatus("authenticated");
 
-  const login = useCallback(async () => {
-    setError(null);
-    try {
-      const session: AuthSession = await loginWithDiscord();
-      const profile = await getCurrentUser(session.session_token);
-      setToken(session.session_token);
-      setExpiresAt(session.expires_at);
-      setUser(profile);
-      setGuilds(await getGuilds(session.session_token));
-      setStatus("authenticated");
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 426) {
-        setStatus("version_blocked");
-        setError(null);
-        return;
+        const versionResult = await checkManagerVersion();
+        if (versionResult.state === "blocked") {
+          setMinimumVersion(versionResult.policy.minimum_version);
+          setStatus("version_blocked");
+        } else if (versionResult.state === "unavailable") {
+          setError(null);
+        }
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 426) {
+          setStatus("version_blocked");
+          setError(null);
+          return;
+        }
+        clearSession();
+        setError(cause instanceof Error ? cause.message : "Accesso non riuscito.");
+        throw cause;
       }
-      clearSession();
-      setError(cause instanceof Error ? cause.message : "Accesso non riuscito.");
-      throw cause;
-    }
+    })();
+    loginInFlight.current = operation;
+    void operation.finally(() => {
+      if (loginInFlight.current === operation) loginInFlight.current = null;
+    });
+    return operation;
   }, [clearSession]);
 
   const logout = useCallback(async () => {

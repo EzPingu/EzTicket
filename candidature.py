@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import asyncio
 import re
 import discord
+from components_v2 import recolor_components_v2, render_components_v2
 from discord import app_commands
 
 from config import (
@@ -280,7 +281,7 @@ def default_team_label(guild: discord.Guild | None) -> str:
 async def _send_dm(utente: discord.abc.User, embed: discord.Embed) -> bool:
     """Prova a inviare l'embed in DM all'utente. Ritorna True se riuscito."""
     try:
-        await utente.send(embed=embed)
+        await utente.send(view=render_components_v2(embed))
         return True
     except (discord.Forbidden, discord.HTTPException):
         return False
@@ -332,7 +333,11 @@ async def _resolve_candidature_summary(guild: discord.Guild, utente: discord.abc
         if summary_msg.embeds:
             summary_embed = summary_msg.embeds[0]
             summary_embed.color = color
-            await summary_msg.edit(embed=summary_embed)
+            await summary_msg.edit(view=render_components_v2(summary_embed))
+        else:
+            summary_view = discord.ui.LayoutView.from_message(summary_msg)
+            if isinstance(summary_view, discord.ui.LayoutView):
+                await summary_msg.edit(view=recolor_components_v2(summary_view, color))
     except (discord.NotFound, discord.Forbidden, discord.HTTPException, KeyError):
         pass
 
@@ -346,7 +351,11 @@ async def _resolve_candidature_summary(guild: discord.Guild, utente: discord.abc
                 notice_embed.color = color
                 notice_embed.title = "✅ Esito Candidatura" if accepted else "❌ Esito Candidatura"
                 notice_embed.description = "**ESITO: ACCETTATO**" if accepted else "**ESITO: RIFIUTATO**"
-                await notice_msg.edit(embed=notice_embed)
+                await notice_msg.edit(view=render_components_v2(notice_embed))
+            else:
+                notice_view = discord.ui.LayoutView.from_message(notice_msg)
+                if isinstance(notice_view, discord.ui.LayoutView):
+                    await notice_msg.edit(view=recolor_components_v2(notice_view, color))
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
@@ -438,7 +447,7 @@ class CandidaturaGroup(app_commands.Group):
             footer_text=f"Valutata da {interaction.user.display_name}",
             footer_icon=interaction.user.display_avatar.url,
         )
-        await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", embed=embed)
+        await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", view=render_components_v2(embed))
         await _send_dm(utente, embed)
 
     @app_commands.command(name="accettata", description="Segnala che una candidatura è stata accettata")
@@ -499,7 +508,7 @@ class CandidaturaGroup(app_commands.Group):
             )
             embed.set_thumbnail(url=utente.display_avatar.url)
             embed.set_footer(text=f"Valutata da {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-            await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", embed=embed)
+            await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", view=render_components_v2(embed))
 
     @app_commands.command(name="rifiutata", description="Segnala che una candidatura è stata rifiutata")
     @app_commands.describe(
@@ -550,7 +559,7 @@ class CandidaturaGroup(app_commands.Group):
             )
             embed.set_thumbnail(url=utente.display_avatar.url)
             embed.set_footer(text=f"Valutata da {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-            await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", embed=embed)
+            await interaction.response.send_message(content=f"{utente.mention} • {interaction.user.mention}", view=render_components_v2(embed))
 
 
 candidatura_group = CandidaturaGroup()
@@ -629,7 +638,7 @@ class DomandeStaffGroup(app_commands.Group):
             color=discord.Color.green(),
         )
         embed.set_footer(text=f"Domande configurate in questo server: {len(questions)}")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
     @app_commands.command(name="rimuovi", description="[Admin server] Rimuovi una domanda della candidatura staff")
     @app_commands.describe(numero="Numero della domanda da rimuovere", tipo="Tipo di candidatura")
@@ -655,7 +664,7 @@ class DomandeStaffGroup(app_commands.Group):
             color=discord.Color.orange(),
         )
         embed.set_footer(text=f"Domande rimaste: {len(questions)}")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
     @app_commands.command(name="lista", description="Elenca le domande configurate in questo server")
     @app_commands.describe(tipo="Tipo di candidatura")
@@ -681,7 +690,7 @@ class DomandeStaffGroup(app_commands.Group):
             color=discord.Color.blurple(),
         )
         embed.set_footer(text=f"{len(questions)} domande configurate · {branding_text(interaction.guild)}")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
 
 domandestaff_group = DomandeStaffGroup()
@@ -819,8 +828,8 @@ async def handle_candidatura_invia(interaction: discord.Interaction, utente: dis
     if guild.icon:
         intro_embed.set_thumbnail(url=guild.icon.url)
     try:
-        await utente.send(embed=intro_embed)
-        await utente.send(embed=build_question_embed(guild, 0, len(questions), questions[0]))
+        await utente.send(view=render_components_v2(intro_embed))
+        await utente.send(view=render_components_v2(build_question_embed(guild, 0, len(questions), questions[0])))
     except (discord.Forbidden, discord.HTTPException):
         await interaction.response.send_message(
             f"❌ Non riesco a scrivere in DM a {utente.mention} (ha i messaggi diretti chiusi).", ephemeral=True
@@ -845,7 +854,7 @@ async def handle_candidatura_invia(interaction: discord.Interaction, utente: dis
         description=f"✅ Domande della candidatura staff inviate in DM a {utente.mention}.",
         color=discord.Color.green(),
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(view=render_components_v2(embed), ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
@@ -865,7 +874,8 @@ class GuildSessionSelect(discord.ui.Select):
             if session is not None:
                 cfg.pop_session(guild_id, interaction.user.id)
             await interaction.response.edit_message(
-                content="⚠️ Quella candidatura non è più in corso.", embed=None, view=None
+                content="⚠️ Quella candidatura non è più in corso.",
+                view=None,
             )
             return
 
@@ -878,7 +888,7 @@ class GuildSessionSelect(discord.ui.Select):
             cfg.pop_session(guild_id, interaction.user.id)
             await interaction.response.edit_message(
                 content="⚠️ Non faccio più parte di quel server: la candidatura è stata annullata.",
-                embed=None, view=None,
+                view=None,
             )
             return
 
@@ -890,12 +900,11 @@ class GuildSessionSelect(discord.ui.Select):
 
         await interaction.response.edit_message(
             content=f"✅ Perfetto: le tue prossime risposte valgono per **{guild.name}**.",
-            embed=None,
             view=None,
         )
         if questions:
             try:
-                await interaction.user.send(embed=build_question_embed(guild, index, len(questions), questions[index]))
+                await interaction.user.send(view=render_components_v2(build_question_embed(guild, index, len(questions), questions[index])))
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
@@ -925,7 +934,7 @@ async def _ask_which_guild(bot: discord.Client, message: discord.Message, guild_
         color=discord.Color.orange(),
     )
     try:
-        await message.channel.send(embed=embed, view=GuildSessionView(bot, options))
+        await message.channel.send(view=render_components_v2(embed, GuildSessionView(bot, options)))
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -1022,7 +1031,7 @@ async def handle_candidatura_dm_answer(bot: discord.Client, message: discord.Mes
     if session["index"] < len(questions):
         try:
             await message.author.send(
-                embed=build_question_embed(guild, session["index"], len(questions), questions[session["index"]])
+                view=render_components_v2(build_question_embed(guild, session["index"], len(questions), questions[session["index"]]))
             )
         except (discord.Forbidden, discord.HTTPException):
             pass
@@ -1081,7 +1090,7 @@ async def handle_candidatura_dm_answer(bot: discord.Client, message: discord.Mes
         content = f"<@&{mention_role_id}>" if mention_role_id else None
         try:
             sent_msg = await channel.send(
-                content=content, embed=embed,
+                content=content, view=render_components_v2(embed),
                 allowed_mentions=discord.AllowedMentions(roles=True),
             )
         except discord.HTTPException:
@@ -1095,7 +1104,7 @@ async def handle_candidatura_dm_answer(bot: discord.Client, message: discord.Mes
                     f"⚠️ In **{guild.name}** non è configurato nessun canale con "
                     f"`/candidaturestaffcanale`: ecco la candidatura completata:",
                 )
-                await starter.send(embed=embed)
+                await starter.send(view=render_components_v2(embed))
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
@@ -1130,7 +1139,7 @@ async def handle_candidatura_dm_answer(bot: discord.Client, message: discord.Mes
                 label="Vai al ticket", emoji="🎫", url=ticket_channel.jump_url, style=discord.ButtonStyle.link,
             ))
         try:
-            sent_notice = await channel.send(embed=notice_embed, view=notice_view)
+            sent_notice = await channel.send(view=render_components_v2(notice_embed, notice_view))
             summary_ref["notice_message_id"] = sent_notice.id
             cfg.save()
         except discord.HTTPException:
@@ -1144,7 +1153,7 @@ async def handle_candidatura_dm_answer(bot: discord.Client, message: discord.Mes
     )
     if isinstance(ticket_channel, discord.TextChannel):
         try:
-            await ticket_channel.send(content=message.author.mention, embed=auto_attesa_embed)
+            await ticket_channel.send(content=message.author.mention, view=render_components_v2(auto_attesa_embed))
         except discord.HTTPException:
             pass
     return True

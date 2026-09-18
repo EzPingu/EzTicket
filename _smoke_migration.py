@@ -116,7 +116,10 @@ check('migrazione registrata', config.MIGRATION_V2 in cfg2.prefs['migrations'])
 check('sessione ancora valida', cfg2.get_session(int(GUILD_CONFIGURATO), 999) is not None)
 
 print('--- isolamento permessi ---')
-check('nessun operator globale senza BOT_OWNER_IDS', config.get_bot_operator_ids() == set())
+check(
+    'operator globale coerente con la policy BOT_OWNER_IDS',
+    config.get_bot_operator_ids() == {config.BOT_OWNER_ID},
+)
 check('admin_ids per-guild', cfg.admin_ids(GUILD_CONFIGURATO) == [101] and cfg.admin_ids(GUILD_DI_PASSAGGIO) == [102])
 
 print('--- preferenze/marcatore ricreati ---')

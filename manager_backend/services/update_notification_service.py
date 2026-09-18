@@ -26,7 +26,11 @@ async def send_discord_dm(*, user_id: int, payload: dict) -> bool:
             )
             if channel_response.status_code not in (200, 201):
                 return False
-            channel_id = channel_response.json().get("id")
+            try:
+                channel_id = channel_response.json().get("id")
+            except (TypeError, ValueError, AttributeError):
+                log.warning("Risposta non valida durante la creazione del DM a user %s", user_id)
+                return False
             if not channel_id:
                 return False
             message_response = await client.post(
@@ -35,7 +39,7 @@ async def send_discord_dm(*, user_id: int, payload: dict) -> bool:
                 json=payload,
             )
             return message_response.status_code in (200, 201)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, ValueError, TypeError):
         log.exception("Errore di rete durante l'invio del DM a user %s", user_id)
         return False
 
@@ -49,38 +53,43 @@ async def send_required_update_dm(
 ) -> bool:
     current_timestamp = int(datetime.now(timezone.utc).timestamp())
     payload = {
-        "content": f"Ciao <@{user_id}>! 👋",
-        "embeds": [
-            {
-                "title": "⚠️ Aggiornamento necessario",
-                "description": (
-                    "Per continuare ad utilizzare EzTicket Manager devi aggiornare "
-                    "alla nuova versione."
-                ),
-                "fields": [
-                    {"name": "Versione installata", "value": installed_version, "inline": True},
-                    {"name": "Versione minima", "value": minimum_version, "inline": True},
-                    {"name": "ID", "value": str(user_id), "inline": True},
-                    {
-                        "name": "Data",
-                        "value": f"<t:{current_timestamp}:F>",
-                        "inline": False,
-                    },
-                ],
-                "footer": {"text": "By EzPingu"},
-            }
-        ],
+        "flags": 1 << 15,
         "components": [
             {
-                "type": 1,
+                "type": 17,
+                "accent_color": 15158332,
                 "components": [
                     {
-                        "type": 2,
-                        "style": 5,
-                        "label": "Scarica nuova versione",
-                        "emoji": {"name": "🟢"},
-                        "url": download_url,
-                    }
+                        "type": 10,
+                        "content": (
+                            f"Ciao <@{user_id}>! 👋\n\n"
+                            "# ⚠️ Aggiornamento necessario\n\n"
+                            "Per continuare ad utilizzare EzTicket Manager devi aggiornare "
+                            "alla nuova versione.\n\n"
+                            f"**Versione installata:** {installed_version}\n"
+                            f"**Versione minima:** {minimum_version}\n"
+                            f"**ID:** {user_id}\n"
+                            f"**Data:** <t:{current_timestamp}:F>\n\n"
+                            "By EzPingu"
+                        ),
+                    },
+                    {
+                        "type": 14,
+                        "divider": True,
+                        "spacing": 1,
+                    },
+                    {
+                        "type": 1,
+                        "components": [
+                            {
+                                "type": 2,
+                                "style": 5,
+                                "label": "Scarica nuova versione",
+                                "emoji": {"name": "🟢"},
+                                "url": download_url,
+                            }
+                        ],
+                    },
                 ],
             }
         ],

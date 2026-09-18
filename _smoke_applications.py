@@ -47,7 +47,7 @@ def test_applications():
         username="staff_user",
         discord_guilds=[{"id": guild_id, "permissions": "0"}]
     )
-    headers = {"Authorization": f"Bearer {session.session_token}"}
+    headers = {"Authorization": f"Bearer {session.session_token}", "X-Manager-Version": "1.2.8"}
     
     def mock_eval(user_id, guild_id, discord_guilds=None):
         from manager_backend.services.guild_service import GuildAccessInfo

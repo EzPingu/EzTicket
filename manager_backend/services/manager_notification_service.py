@@ -75,9 +75,29 @@ async def send_lockout_expired_dm(*, user_id: int) -> bool:
                 "content": (
                     "🟢 **Blocco di sicurezza disattivato**\n\n"
                     "Il blocco è stato disattivato automaticamente poiché sono trascorsi "
-                    "i 5 minuti previsti.\n\n"
+                    "i 10 minuti previsti.\n\n"
                     "🔓 I nuovi accessi a EzTicket Manager sono nuovamente consentiti.\n\n"
                     "🛡️ La procedura di sicurezza è stata completata."
+                ),
+            }],
+        }],
+    }
+    return await send_discord_dm(user_id=user_id, payload=payload)
+
+
+async def send_lockout_removed_dm(*, user_id: int) -> bool:
+    payload = {
+        "flags": 32768,
+        "components": [{
+            "type": 17,
+            "accent_color": 0x57D39B,
+            "components": [{
+                "type": 10,
+                "content": (
+                    "🟢 **Blocco di sicurezza rimosso**\n\n"
+                    "Il blocco di sicurezza del tuo account EzTicket Manager "
+                    "è stato rimosso da un amministratore.\n\n"
+                    "🔓 I nuovi accessi a EzTicket Manager sono nuovamente consentiti."
                 ),
             }],
         }],
